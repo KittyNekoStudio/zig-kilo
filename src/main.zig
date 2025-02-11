@@ -6,15 +6,21 @@ const stdout = std.io.getStdOut();
 const Editor = struct {
     in: std.fs.File,
     origin_termios: ?posix.termios,
+    version: []const u8,
     rows: u16,
     cols: u16,
+    cursor_x: u16,
+    cursor_y: u16,
 
     pub fn init() !Editor {
         var editor = Editor {
             .in = stdin,
+            .version = "0.0.1",
             .origin_termios = null,
             .rows = 0,
             .cols = 0,
+            .cursor_x = 0,
+            .cursor_y = 0,
         };
 
         // TODO! handle the return value
@@ -85,21 +91,68 @@ const Editor = struct {
 
         var writer = buffer.writer();
 
-        try writer.writeAll("\x1b[2J");
+        try writer.writeAll("\x1b[?25l");
         try writer.writeAll("\x1b[H");
 
         try self.editorDrawRows(writer);
-        try writer.writeAll("\x1b[H");
+
+        // TODO! find a better way to format strings.
+        var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+        const string_allocator = gpa.allocator();
+
+        const move_cursor = try std.fmt.allocPrint(string_allocator, 
+            "\x1b[{d};{d}H", .{self.cursor_y + 1, self.cursor_x + 1});
+        defer string_allocator.free(move_cursor);
+        try writer.writeAll(move_cursor);
+
+        try writer.writeAll("\x1b[?25h");
         
         try stdout.writer().writeAll(buffer.items);
     }
 
     fn editorDrawRows(self: Editor, writer: anytype) !void {
         for (0..self.rows) |i| {
-            try writer.writeAll("~");
+
+            if (i == self.rows / 3) {
+                // TODO! find a better way to format strings.
+                var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+                const allocator = gpa.allocator();
+
+                var welcome = try std.fmt.allocPrint(allocator, 
+                    "Zilo Editor -- version {s}", .{self.version});
+                defer allocator.free(welcome);
+
+                if (welcome.len > self.cols) welcome = welcome[0..self.cols];
+                
+                var padding = (self.cols - welcome.len) / 2;
+                if (padding != 0) {
+                    try writer.writeAll("~");
+                    padding -= 1;
+                }
+
+                while (padding != 0) : (padding -= 1) {
+                    try writer.writeAll(" ");
+                }
+
+                try writer.writeAll(welcome);
+            } else {
+                try writer.writeAll("~");
+            }
+
+            try writer.writeAll("\x1b[K");
             if (i < self.rows - 1) {
                 try writer.writeAll("\r\n");
             }
+        }
+    }
+
+    fn moveCursor(self: *Editor, key: u8) void {
+        switch (key) {
+            'w' => self.cursor_y -= 1,
+            'a' => self.cursor_x -= 1,
+            's' => self.cursor_y += 1,
+            'd' => self.cursor_x += 1,
+            else => {}
         }
     }
 };
@@ -114,11 +167,17 @@ fn editorReadKey() !u8 {
     return buffer[0];
 }
 
-fn editorProcessKeypress() !bool {
+// TODO! move this to a method of Editor.
+fn editorProcessKeypress(editor: *Editor) !bool {
     const c = try editorReadKey();
 
     switch (c) {
         ctrlKey('q') => return false,
+        // TODO! find a way to colapse these into one case.
+        'w' => editor.moveCursor(c),
+        'a' => editor.moveCursor(c),
+        's' => editor.moveCursor(c),
+        'd' => editor.moveCursor(c),
         else => {}
     }
 
@@ -141,7 +200,7 @@ pub fn main() !void {
 
     try editor.enableRawMode();
 
-    while (try editorProcessKeypress()) {
+    while (try editorProcessKeypress(&editor)) {
         try editor.editorRefreshScreen(allocator);
     }
 
