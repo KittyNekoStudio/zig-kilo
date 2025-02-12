@@ -3,6 +3,18 @@ const posix = std.posix;
 const stdin = std.io.getStdIn();
 const stdout = std.io.getStdOut();
 
+const Movement = enum(u16) {
+    MOVE_LEFT = 1000,
+    MOVE_RIGHT,
+    MOVE_UP,
+    MOVE_DOWN,
+    DEL_KEY,
+    HOME_KEY,
+    END_KEY,
+    PAGE_UP,
+    PAGE_DOWN,
+};
+
 const Editor = struct {
     in: std.fs.File,
     origin_termios: ?posix.termios,
@@ -56,7 +68,6 @@ const Editor = struct {
         // Control flags
         raw.cflag.CSIZE = posix.CSIZE.CS8;
 
-        // TODO! this feels wrong
         raw.cc[@intFromEnum(posix.V.MIN)] = 0;
         raw.cc[@intFromEnum(posix.V.TIME)] = 1;
 
@@ -146,14 +157,41 @@ const Editor = struct {
         }
     }
 
-    fn moveCursor(self: *Editor, key: u8) void {
+    fn moveCursor(self: *Editor, key: u16) void {
         switch (key) {
-            'w' => self.cursor_y -= 1,
-            'a' => self.cursor_x -= 1,
-            's' => self.cursor_y += 1,
-            'd' => self.cursor_x += 1,
+            @intFromEnum(Movement.MOVE_UP)    => if (self.cursor_y != 0) {self.cursor_y -= 1;},
+            @intFromEnum(Movement.MOVE_DOWN)  => if (self.cursor_y != self.rows - 1) {self.cursor_y += 1;},
+            @intFromEnum(Movement.MOVE_RIGHT) => if (self.cursor_x != self.cols - 1) {self.cursor_x += 1;},
+            @intFromEnum(Movement.MOVE_LEFT)  => if (self.cursor_x != 0) {self.cursor_x -= 1;},
             else => {}
         }
+    }
+
+    fn editorProcessKeypress(self: *Editor) !bool {
+        const c: u16 = try editorReadKey();
+
+        switch (c) {
+            ctrlKey('q') => return false,
+            @intFromEnum(Movement.MOVE_UP),
+            @intFromEnum(Movement.MOVE_DOWN),
+            @intFromEnum(Movement.MOVE_RIGHT),
+            @intFromEnum(Movement.MOVE_LEFT) => self.moveCursor(c),
+            @intFromEnum(Movement.PAGE_UP),
+            @intFromEnum(Movement.PAGE_DOWN) => {
+                // TODO! clean this up.
+                var times = self.rows;
+                while(times > 0) : (times -= 1) {
+                    const move = if (c == @intFromEnum(Movement.PAGE_UP)) @intFromEnum(Movement.MOVE_UP)
+                        else @intFromEnum(Movement.MOVE_DOWN);
+
+                    self.moveCursor(move);
+                }
+            },
+            @intFromEnum(Movement.HOME_KEY) => self.cursor_x = 0,
+            @intFromEnum(Movement.END_KEY) => self.cursor_x = self.cols - 1,
+            else => {},
+        }
+        return true;
     }
 };
 
@@ -161,27 +199,51 @@ fn ctrlKey(key: u8) u8 {
     return key & 0x1f;
 }
 
-fn editorReadKey() !u8 {
+fn editorReadKey() !u16 {
     var buffer: [1]u8 = undefined;
     _ = try stdin.reader().read(&buffer);
-    return buffer[0];
-}
 
-// TODO! move this to a method of Editor.
-fn editorProcessKeypress(editor: *Editor) !bool {
-    const c = try editorReadKey();
+    if (buffer[0] == '\x1b') {
+        var seq: [3]u8 = undefined;
 
-    switch (c) {
-        ctrlKey('q') => return false,
-        // TODO! find a way to colapse these into one case.
-        'w' => editor.moveCursor(c),
-        'a' => editor.moveCursor(c),
-        's' => editor.moveCursor(c),
-        'd' => editor.moveCursor(c),
-        else => {}
+        if (try stdin.reader().read(seq[0..1]) != 1) return '\x1b';
+        if (try stdin.reader().read(seq[1..2]) != 1) return '\x1b';
+
+        if (seq[0] == '[') {
+            if (seq[1] >= '0' and seq[1] <= '9') {
+                if (try stdin.reader().read(seq[2..3]) != 1) return '\x1b';
+                if (seq[2] == '~') {
+                        switch (seq[1]) {
+                            '1'  => return @intFromEnum(Movement.HOME_KEY),
+                            '3'  => return @intFromEnum(Movement.DEL_KEY),
+                            '4'  => return @intFromEnum(Movement.END_KEY),
+                            '5'  => return @intFromEnum(Movement.PAGE_UP),
+                            '6'  => return @intFromEnum(Movement.PAGE_DOWN),
+                            '7'  => return @intFromEnum(Movement.HOME_KEY),
+                            '8'  => return @intFromEnum(Movement.END_KEY),
+                            else => return '\x1b',
+                    }
+                }
+            } else {
+                switch (seq[1]) {
+                    'A'  => return @intFromEnum(Movement.MOVE_UP),
+                    'B'  => return @intFromEnum(Movement.MOVE_DOWN),
+                    'C'  => return @intFromEnum(Movement.MOVE_RIGHT),
+                    'D'  => return @intFromEnum(Movement.MOVE_LEFT),
+                    'H'  => return @intFromEnum(Movement.HOME_KEY),
+                    'F'  => return @intFromEnum(Movement.END_KEY),
+                    else => return '\x1b',
+                }
+            } 
+        } else if (seq[0] == 'O') {
+            switch (seq[1]) {
+                'H'  => return @intFromEnum(Movement.HOME_KEY),
+                'F'  => return @intFromEnum(Movement.END_KEY),
+                else => return '\x1b',
+            }
+        }
     }
-
-    return true;
+    return buffer[0];
 }
 
 fn onExit() !void {
@@ -200,7 +262,7 @@ pub fn main() !void {
 
     try editor.enableRawMode();
 
-    while (try editorProcessKeypress(&editor)) {
+    while (try editor.editorProcessKeypress()) {
         try editor.editorRefreshScreen(allocator);
     }
 
