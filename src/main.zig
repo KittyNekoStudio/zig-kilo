@@ -128,7 +128,7 @@ const Editor = struct {
     fn drawRows(self: Editor, writer: anytype) !void {
         for (0..self.screen_rows) |y| {
             if (y >= self.numrows) {
-                if (self.row.len == 0 and y == self.screen_rows / 3) {
+                if (self.numrows == 0 and y == self.screen_rows / 3) {
                     var welcome = try std.fmt.allocPrint(self.allocator, 
                         "Zilo Editor -- version {s}", .{self.version});
                     defer self.allocator.free(welcome);
