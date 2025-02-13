@@ -16,11 +16,6 @@ const Movement = enum(u16) {
     PAGE_DOWN,
 };
 
-const Erow = struct {
-    size: u16,
-    string: []const u8,
-};
-
 const Editor = struct {
     origin_termios: ?posix.termios,
     version: []const u8,
@@ -29,11 +24,12 @@ const Editor = struct {
     cursor_x: u16,
     cursor_y: u16,
     numrows: u16,
-    row: Erow,
+    row: []u8,
     allocator: std.mem.Allocator,
 
-    pub fn init(allocator: std.mem.Allocator) !Editor {
-        var editor = Editor {
+    pub fn init(allocator: std.mem.Allocator) !*Editor {
+        var editor = try allocator.create(Editor);
+        editor.* = .{
             .version = "0.0.1",
             .origin_termios = null,
             .screen_rows = 0,
@@ -41,7 +37,7 @@ const Editor = struct {
             .cursor_x = 0,
             .cursor_y = 0,
             .numrows = 0,
-            .row = Erow {.size = 0, .string = ""},
+            .row = undefined,
             .allocator = allocator,
         };
 
@@ -130,9 +126,9 @@ const Editor = struct {
     }
 
     fn drawRows(self: Editor, writer: anytype) !void {
-        for (0..self.screen_rows) |i| {
-            if (i >= self.numrows) {
-                if (i == self.screen_rows / 3) {
+        for (0..self.screen_rows) |y| {
+            if (y >= self.numrows) {
+                if (self.row.len == 0 and y == self.screen_rows / 3) {
                     var welcome = try std.fmt.allocPrint(self.allocator, 
                         "Zilo Editor -- version {s}", .{self.version});
                     defer self.allocator.free(welcome);
@@ -155,16 +151,16 @@ const Editor = struct {
                     try writer.writeAll("~");
                 }
             } else {
-                var len = self.row.size;
+                var len = self.row.len;
                 if (len > self.screen_cols) len = self.screen_cols;
 
                 const string = try std.fmt.allocPrint(self.allocator, "{s}",
-                    .{self.row.string[0..len]});
+                    .{self.row[0..len]});
                 defer self.allocator.free(string);
                 try writer.writeAll(string);
             }
             try writer.writeAll("\x1b[K");
-            if (i < self.screen_rows - 1) {
+            if (y < self.screen_rows - 1) {
                 try writer.writeAll("\r\n");
             }
         }
@@ -207,12 +203,13 @@ const Editor = struct {
         return true;
     }
 
-    fn open(self: *Editor) void {
-        const line = "Hello, World! I need a long line of text to see screen cutoff.";
+    fn open(self: *Editor, filepath: []const u8) !void {
+       const file = try std.fs.cwd().openFile(filepath, .{.mode = .read_only});
+        defer file.close();
+            self.row = try file.reader()
+                .readUntilDelimiterAlloc(self.allocator, '\n', 1024 * 1024);
+            self.numrows = 1;
 
-        self.row.size = line.len;
-        self.row.string = line;
-        self.numrows = 1;
     }
 };
 
@@ -277,7 +274,8 @@ pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     const allocator = gpa.allocator();
 
-    defer {
+    // TODO! change to argsWithAllocator
+        defer {
         const mem_leak = gpa.deinit();
         switch (mem_leak) {
             .ok => std.debug.print("No memory leak.\n", .{}),
@@ -286,15 +284,24 @@ pub fn main() !void {
     }
 
     var editor = try Editor.init(allocator);
+    defer allocator.destroy(editor);
+
+    var args = try std.process.argsWithAllocator(allocator);
+    defer std.process.ArgIterator.deinit(&args);
 
     try editor.enableRawMode();
-    editor.open();
+
+    _ = args.skip();
+    if (args.next()) |filepath| try editor.open(filepath);
 
     while (try editor.processKeypress()) {
         try editor.editorRefreshScreen();
     }
 
     try editor.disableRawMode();
+
+    // TODO! seems a little weird to check based on lenght.
+    if (editor.row.len != undefined) allocator.free(editor.row);
 
     try onExit();
 }
