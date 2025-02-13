@@ -137,7 +137,8 @@ const Editor = struct {
                         "Zilo Editor -- version {s}", .{self.version});
                     defer self.allocator.free(welcome);
 
-                    if (welcome.len > self.screen_cols) welcome = welcome[0..self.screen_cols];
+                    if (welcome.len > self.screen_cols) welcome
+                        = welcome[0..self.screen_cols];
                     
                     var padding = (self.screen_cols - welcome.len) / 2;
                     if (padding != 0) {
@@ -275,8 +276,14 @@ fn onExit() !void {
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     const allocator = gpa.allocator();
-    // TODO! add this
-    //defer gpa.deinit();
+
+    defer {
+        const mem_leak = gpa.deinit();
+        switch (mem_leak) {
+            .ok => std.debug.print("No memory leak.\n", .{}),
+            .leak => std.debug.print("Memory was leaked.", .{}),
+        }
+    }
 
     var editor = try Editor.init(allocator);
 
