@@ -1,3 +1,4 @@
+// TODO! look into inline loops for string formating
 const std = @import("std");
 const posix = std.posix;
 const stdin = std.io.getStdIn();
@@ -15,24 +16,33 @@ const Movement = enum(u16) {
     PAGE_DOWN,
 };
 
+const Erow = struct {
+    size: u16,
+    string: []const u8,
+};
+
 const Editor = struct {
-    in: std.fs.File,
     origin_termios: ?posix.termios,
     version: []const u8,
-    rows: u16,
-    cols: u16,
+    screen_rows: u16,
+    screen_cols: u16,
     cursor_x: u16,
     cursor_y: u16,
+    numrows: u16,
+    row: Erow,
+    allocator: std.mem.Allocator,
 
-    pub fn init() !Editor {
+    pub fn init(allocator: std.mem.Allocator) !Editor {
         var editor = Editor {
-            .in = stdin,
             .version = "0.0.1",
             .origin_termios = null,
-            .rows = 0,
-            .cols = 0,
+            .screen_rows = 0,
+            .screen_cols = 0,
             .cursor_x = 0,
             .cursor_y = 0,
+            .numrows = 0,
+            .row = Erow {.size = 0, .string = ""},
+            .allocator = allocator,
         };
 
         // TODO! handle the return value
@@ -45,7 +55,7 @@ const Editor = struct {
     // I tried for an hour to get this to work using os.linux but couldn't
     // Thanks for showing me std.posix
     pub fn enableRawMode(self: *Editor) !void {
-        var raw = try posix.tcgetattr(self.in.handle);
+        var raw = try posix.tcgetattr(stdin.handle);
 
         self.origin_termios = raw;
 
@@ -89,15 +99,15 @@ const Editor = struct {
             or win_size.ws_col == 0) {
                 return -1;
         } else {
-            self.rows = win_size.ws_row;
-            self.cols = win_size.ws_col;
+            self.screen_rows = win_size.ws_row;
+            self.screen_cols = win_size.ws_col;
         }
 
         return 0;
     }
 
-    fn editorRefreshScreen(self: Editor, allocator: std.mem.Allocator) !void {
-        var buffer = std.ArrayList(u8).init(allocator);
+    fn editorRefreshScreen(self: Editor) !void {
+        var buffer = std.ArrayList(u8).init(self.allocator);
         defer buffer.deinit();
 
         var writer = buffer.writer();
@@ -105,15 +115,13 @@ const Editor = struct {
         try writer.writeAll("\x1b[?25l");
         try writer.writeAll("\x1b[H");
 
-        try self.editorDrawRows(writer);
+        try self.drawRows(writer);
 
         // TODO! find a better way to format strings.
-        var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-        const string_allocator = gpa.allocator();
 
-        const move_cursor = try std.fmt.allocPrint(string_allocator, 
+        const move_cursor = try std.fmt.allocPrint(self.allocator, 
             "\x1b[{d};{d}H", .{self.cursor_y + 1, self.cursor_x + 1});
-        defer string_allocator.free(move_cursor);
+        defer self.allocator.free(move_cursor);
         try writer.writeAll(move_cursor);
 
         try writer.writeAll("\x1b[?25h");
@@ -121,37 +129,41 @@ const Editor = struct {
         try stdout.writer().writeAll(buffer.items);
     }
 
-    fn editorDrawRows(self: Editor, writer: anytype) !void {
-        for (0..self.rows) |i| {
+    fn drawRows(self: Editor, writer: anytype) !void {
+        for (0..self.screen_rows) |i| {
+            if (i >= self.numrows) {
+                if (i == self.screen_rows / 3) {
+                    var welcome = try std.fmt.allocPrint(self.allocator, 
+                        "Zilo Editor -- version {s}", .{self.version});
+                    defer self.allocator.free(welcome);
 
-            if (i == self.rows / 3) {
-                // TODO! find a better way to format strings.
-                var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-                const allocator = gpa.allocator();
+                    if (welcome.len > self.screen_cols) welcome = welcome[0..self.screen_cols];
+                    
+                    var padding = (self.screen_cols - welcome.len) / 2;
+                    if (padding != 0) {
+                        try writer.writeAll("~");
+                        padding -= 1;
+                    }
 
-                var welcome = try std.fmt.allocPrint(allocator, 
-                    "Zilo Editor -- version {s}", .{self.version});
-                defer allocator.free(welcome);
+                    while (padding != 0) : (padding -= 1) {
+                        try writer.writeAll(" ");
+                    }
 
-                if (welcome.len > self.cols) welcome = welcome[0..self.cols];
-                
-                var padding = (self.cols - welcome.len) / 2;
-                if (padding != 0) {
+                    try writer.writeAll(welcome);
+                } else {
                     try writer.writeAll("~");
-                    padding -= 1;
                 }
-
-                while (padding != 0) : (padding -= 1) {
-                    try writer.writeAll(" ");
-                }
-
-                try writer.writeAll(welcome);
             } else {
-                try writer.writeAll("~");
-            }
+                var len = self.row.size;
+                if (len > self.screen_cols) len = self.screen_cols;
 
+                const string = try std.fmt.allocPrint(self.allocator, "{s}",
+                    .{self.row.string[0..len]});
+                defer self.allocator.free(string);
+                try writer.writeAll(string);
+            }
             try writer.writeAll("\x1b[K");
-            if (i < self.rows - 1) {
+            if (i < self.screen_rows - 1) {
                 try writer.writeAll("\r\n");
             }
         }
@@ -160,14 +172,14 @@ const Editor = struct {
     fn moveCursor(self: *Editor, key: u16) void {
         switch (key) {
             @intFromEnum(Movement.MOVE_UP)    => if (self.cursor_y != 0) {self.cursor_y -= 1;},
-            @intFromEnum(Movement.MOVE_DOWN)  => if (self.cursor_y != self.rows - 1) {self.cursor_y += 1;},
-            @intFromEnum(Movement.MOVE_RIGHT) => if (self.cursor_x != self.cols - 1) {self.cursor_x += 1;},
+            @intFromEnum(Movement.MOVE_DOWN)  => if (self.cursor_y != self.screen_rows - 1) {self.cursor_y += 1;},
+            @intFromEnum(Movement.MOVE_RIGHT) => if (self.cursor_x != self.screen_cols - 1) {self.cursor_x += 1;},
             @intFromEnum(Movement.MOVE_LEFT)  => if (self.cursor_x != 0) {self.cursor_x -= 1;},
             else => {}
         }
     }
 
-    fn editorProcessKeypress(self: *Editor) !bool {
+    fn processKeypress(self: *Editor) !bool {
         const c: u16 = try editorReadKey();
 
         switch (c) {
@@ -179,7 +191,7 @@ const Editor = struct {
             @intFromEnum(Movement.PAGE_UP),
             @intFromEnum(Movement.PAGE_DOWN) => {
                 // TODO! clean this up.
-                var times = self.rows;
+                var times = self.screen_rows;
                 while(times > 0) : (times -= 1) {
                     const move = if (c == @intFromEnum(Movement.PAGE_UP)) @intFromEnum(Movement.MOVE_UP)
                         else @intFromEnum(Movement.MOVE_DOWN);
@@ -188,10 +200,18 @@ const Editor = struct {
                 }
             },
             @intFromEnum(Movement.HOME_KEY) => self.cursor_x = 0,
-            @intFromEnum(Movement.END_KEY) => self.cursor_x = self.cols - 1,
+            @intFromEnum(Movement.END_KEY) => self.cursor_x = self.screen_cols - 1,
             else => {},
         }
         return true;
+    }
+
+    fn open(self: *Editor) void {
+        const line = "Hello, World! I need a long line of text to see screen cutoff.";
+
+        self.row.size = line.len;
+        self.row.string = line;
+        self.numrows = 1;
     }
 };
 
@@ -253,17 +273,18 @@ fn onExit() !void {
 
 
 pub fn main() !void {
-    // TODO! add this to the editor struct?
-    // Don't know how I feel about having an allocator as a struct field.
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     const allocator = gpa.allocator();
+    // TODO! add this
+    //defer gpa.deinit();
 
-    var editor = try Editor.init();
+    var editor = try Editor.init(allocator);
 
     try editor.enableRawMode();
+    editor.open();
 
-    while (try editor.editorProcessKeypress()) {
-        try editor.editorRefreshScreen(allocator);
+    while (try editor.processKeypress()) {
+        try editor.editorRefreshScreen();
     }
 
     try editor.disableRawMode();
