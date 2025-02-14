@@ -153,7 +153,7 @@ const Editor = struct {
                 if (len > self.screen_cols) len = self.screen_cols;
 
                 if (len != 0) {
-                    try writer.writeAll(self.rows.items[filerow][self.col_off..self.col_off + len]);
+                    try writer.writeAll(self.rows.items[filerow][self.col_off .. self.col_off + len]);
                 }
             }
             try writer.writeAll("\x1b[K");
@@ -164,21 +164,34 @@ const Editor = struct {
     }
 
     fn moveCursor(self: *Editor, key: u16) void {
+        var row = if (self.cursor_y >= self.rows.items.len) null else self.rows.items[self.cursor_y];
         switch (key) {
             @intFromEnum(Movement.MOVE_UP) => if (self.cursor_y != 0) {
                 self.cursor_y -= 1;
             },
-            // TODO! cannot move down when opening without file
             @intFromEnum(Movement.MOVE_DOWN) => if (self.cursor_y < self.rows.items.len) {
                 self.cursor_y += 1;
             },
             @intFromEnum(Movement.MOVE_RIGHT) => {
-                self.cursor_x += 1;
+                if (row != null and self.cursor_x < row.?.len) {
+                    self.cursor_x += 1;
+                } else if (row != null and self.cursor_x == row.?.len) {
+                    self.cursor_y += 1;
+                    self.cursor_x = 0;
+                }
             },
             @intFromEnum(Movement.MOVE_LEFT) => if (self.cursor_x != 0) {
                 self.cursor_x -= 1;
+            } else if (self.cursor_y > 0) {
+                self.cursor_y -= 1;
+                self.cursor_x = @intCast(self.rows.items[self.cursor_y].len);
             },
             else => {},
+        }
+        row = if (self.cursor_y >= self.rows.items.len) null else self.rows.items[self.cursor_y];
+        const rowlen = if (row != null) row.?.len else 0;
+        if (self.cursor_x > rowlen) {
+            self.cursor_x = @intCast(rowlen);
         }
     }
 
@@ -198,7 +211,12 @@ const Editor = struct {
                 }
             },
             @intFromEnum(Movement.HOME_KEY) => self.cursor_x = 0,
-            @intFromEnum(Movement.END_KEY) => self.cursor_x = self.screen_cols - 1,
+            @intFromEnum(Movement.END_KEY) => {
+                while (true) {
+                    if (self.cursor_x >= self.rows.items[self.cursor_y].len) break else self.cursor_x += 1;
+                }
+            },
+
             else => {},
         }
         return true;
