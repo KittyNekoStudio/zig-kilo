@@ -16,21 +16,22 @@ const Movement = enum(u16) {
     PAGE_DOWN,
 };
 
+const VERSION = "0.0.1";
+
 const Editor = struct {
     origin_termios: ?posix.termios,
-    version: []const u8,
     screen_rows: u16,
     screen_cols: u16,
     cursor_x: u16,
     cursor_y: u16,
     rows: std.ArrayList([]u8),
     row_off: u16,
+    col_off: u16,
     allocator: std.mem.Allocator,
 
     pub fn init(allocator: std.mem.Allocator) !*Editor {
         var editor = try allocator.create(Editor);
         editor.* = .{
-            .version = "0.0.1",
             .origin_termios = null,
             .screen_rows = 0,
             .screen_cols = 0,
@@ -38,6 +39,7 @@ const Editor = struct {
             .cursor_y = 0,
             .rows = std.ArrayList([]u8).init(allocator),
             .row_off = 0,
+            .col_off = 0,
             .allocator = allocator,
         };
 
@@ -117,7 +119,7 @@ const Editor = struct {
 
         // TODO! find a better way to format strings.
         const move_cursor = try std.fmt.allocPrint(self.allocator, 
-            "\x1b[{d};{d}H", .{self.cursor_y + 1, self.cursor_x + 1});
+            "\x1b[{d};{d}H", .{(self.cursor_y - self.row_off) + 1, (self.cursor_x - self.col_off) + 1});
         defer self.allocator.free(move_cursor);
         try writer.writeAll(move_cursor);
 
@@ -126,14 +128,12 @@ const Editor = struct {
         try stdout.writer().writeAll(buffer.items);
     }
 
-    fn drawRows(self: Editor, writer: anytype) !void {
+    fn drawRows(self: *Editor, writer: anytype) !void {
         for (0..self.screen_rows) |y| {
             const filerow = y + self.row_off;
             if (filerow >= self.rows.items.len) {
                 if (self.rows.items.len == 0 and y == self.screen_rows / 3) {
-                    var welcome = try std.fmt.allocPrint(self.allocator, 
-                        "Zilo Editor -- version {s}", .{self.version});
-                    defer self.allocator.free(welcome);
+                    var welcome: []const u8 = "Zilo Editor -- version " ++ VERSION;
 
                     if (welcome.len > self.screen_cols) welcome
                         = welcome[0..self.screen_cols];
@@ -153,14 +153,11 @@ const Editor = struct {
                     try writer.writeAll("~");
                 }
             } else {
-                const row = self.rows.items[filerow];
-                var len = row.len;
-                if (len > self.screen_cols) len = self.screen_cols;
+                // TODO! the is a bug where it doesn't render entire line if it is longer than the screen
+                var row = self.rows.items[filerow];
+                if (row.len < self.col_off) row = "" else row = row[self.col_off..];
 
-                const string = try std.fmt.allocPrint(self.allocator, "{s}",
-                    .{row[0..len]});
-                defer self.allocator.free(string);
-                try writer.writeAll(string);
+                try writer.writeAll(row);
             }
             try writer.writeAll("\x1b[K");
             if (y < self.screen_rows - 1) {
@@ -174,7 +171,7 @@ const Editor = struct {
             @intFromEnum(Movement.MOVE_UP)    => if (self.cursor_y != 0) {self.cursor_y -= 1;},
             // TODO! cannot move down when opening without file 
             @intFromEnum(Movement.MOVE_DOWN)  => if (self.cursor_y < self.rows.items.len) {self.cursor_y += 1;},
-            @intFromEnum(Movement.MOVE_RIGHT) => if (self.cursor_x != self.screen_cols - 1) {self.cursor_x += 1;},
+            @intFromEnum(Movement.MOVE_RIGHT) =>    {self.cursor_x += 1;},
             @intFromEnum(Movement.MOVE_LEFT)  => if (self.cursor_x != 0) {self.cursor_x -= 1;},
             else => {}
         }
@@ -222,6 +219,14 @@ const Editor = struct {
 
         if (self.cursor_y >= self.row_off + self.screen_rows) {
             self.row_off = self.cursor_y - self.screen_rows + 1;
+        }
+
+        if (self.cursor_x < self.col_off) {
+            self.col_off = self.cursor_x;
+        }
+        
+        if (self.cursor_x >= self.col_off + self.screen_cols) {
+            self.col_off = self.cursor_x - self.screen_cols + 1;
         }
     }
 };
