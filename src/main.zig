@@ -89,13 +89,10 @@ const Editor = struct {
     }
 
     pub fn getWindowSize(self: *Editor) !i8 {
-        var win_size = std.posix.system.winsize{.ws_col = 0, .ws_row = 0,
-            .ws_xpixel = 0, .ws_ypixel = 0};
+        var win_size = std.posix.system.winsize{ .ws_col = 0, .ws_row = 0, .ws_xpixel = 0, .ws_ypixel = 0 };
 
-        if (std.posix.system.ioctl(stdout.handle, 
-                posix.system.T.IOCGWINSZ, @intFromPtr(&win_size)) == -1
-            or win_size.ws_col == 0) {
-                return -1;
+        if (std.posix.system.ioctl(stdout.handle, posix.system.T.IOCGWINSZ, @intFromPtr(&win_size)) == -1 or win_size.ws_col == 0) {
+            return -1;
         } else {
             self.screen_rows = win_size.ws_row;
             self.screen_cols = win_size.ws_col;
@@ -118,13 +115,12 @@ const Editor = struct {
         try self.drawRows(writer);
 
         // TODO! find a better way to format strings.
-        const move_cursor = try std.fmt.allocPrint(self.allocator, 
-            "\x1b[{d};{d}H", .{(self.cursor_y - self.row_off) + 1, (self.cursor_x - self.col_off) + 1});
+        const move_cursor = try std.fmt.allocPrint(self.allocator, "\x1b[{d};{d}H", .{ (self.cursor_y - self.row_off) + 1, (self.cursor_x - self.col_off) + 1 });
         defer self.allocator.free(move_cursor);
         try writer.writeAll(move_cursor);
 
         try writer.writeAll("\x1b[?25h");
-        
+
         try stdout.writer().writeAll(buffer.items);
     }
 
@@ -135,9 +131,8 @@ const Editor = struct {
                 if (self.rows.items.len == 0 and y == self.screen_rows / 3) {
                     var welcome: []const u8 = "Zilo Editor -- version " ++ VERSION;
 
-                    if (welcome.len > self.screen_cols) welcome
-                        = welcome[0..self.screen_cols];
-                    
+                    if (welcome.len > self.screen_cols) welcome = welcome[0..self.screen_cols];
+
                     var padding = (self.screen_cols - welcome.len) / 2;
                     if (padding != 0) {
                         try writer.writeAll("~");
@@ -153,11 +148,13 @@ const Editor = struct {
                     try writer.writeAll("~");
                 }
             } else {
-                // TODO! the is a bug where it doesn't render entire line if it is longer than the screen
-                var row = self.rows.items[filerow];
-                if (row.len < self.col_off) row = "" else row = row[self.col_off..];
+                var len: usize = 0;
+                if (self.col_off < self.rows.items[filerow].len) len = self.rows.items[filerow].len - self.col_off;
+                if (len > self.screen_cols) len = self.screen_cols;
 
-                try writer.writeAll(row);
+                if (len != 0) {
+                    try writer.writeAll(self.rows.items[filerow][self.col_off..self.col_off + len]);
+                }
             }
             try writer.writeAll("\x1b[K");
             if (y < self.screen_rows - 1) {
@@ -168,12 +165,20 @@ const Editor = struct {
 
     fn moveCursor(self: *Editor, key: u16) void {
         switch (key) {
-            @intFromEnum(Movement.MOVE_UP)    => if (self.cursor_y != 0) {self.cursor_y -= 1;},
-            // TODO! cannot move down when opening without file 
-            @intFromEnum(Movement.MOVE_DOWN)  => if (self.cursor_y < self.rows.items.len) {self.cursor_y += 1;},
-            @intFromEnum(Movement.MOVE_RIGHT) =>    {self.cursor_x += 1;},
-            @intFromEnum(Movement.MOVE_LEFT)  => if (self.cursor_x != 0) {self.cursor_x -= 1;},
-            else => {}
+            @intFromEnum(Movement.MOVE_UP) => if (self.cursor_y != 0) {
+                self.cursor_y -= 1;
+            },
+            // TODO! cannot move down when opening without file
+            @intFromEnum(Movement.MOVE_DOWN) => if (self.cursor_y < self.rows.items.len) {
+                self.cursor_y += 1;
+            },
+            @intFromEnum(Movement.MOVE_RIGHT) => {
+                self.cursor_x += 1;
+            },
+            @intFromEnum(Movement.MOVE_LEFT) => if (self.cursor_x != 0) {
+                self.cursor_x -= 1;
+            },
+            else => {},
         }
     }
 
@@ -182,17 +187,12 @@ const Editor = struct {
 
         switch (c) {
             ctrlKey('q') => return false,
-            @intFromEnum(Movement.MOVE_UP),
-            @intFromEnum(Movement.MOVE_DOWN),
-            @intFromEnum(Movement.MOVE_RIGHT),
-            @intFromEnum(Movement.MOVE_LEFT) => self.moveCursor(c),
-            @intFromEnum(Movement.PAGE_UP),
-            @intFromEnum(Movement.PAGE_DOWN) => {
+            @intFromEnum(Movement.MOVE_UP), @intFromEnum(Movement.MOVE_DOWN), @intFromEnum(Movement.MOVE_RIGHT), @intFromEnum(Movement.MOVE_LEFT) => self.moveCursor(c),
+            @intFromEnum(Movement.PAGE_UP), @intFromEnum(Movement.PAGE_DOWN) => {
                 // TODO! clean this up.
                 var times = self.screen_rows;
-                while(times > 0) : (times -= 1) {
-                    const move = if (c == @intFromEnum(Movement.PAGE_UP)) @intFromEnum(Movement.MOVE_UP)
-                        else @intFromEnum(Movement.MOVE_DOWN);
+                while (times > 0) : (times -= 1) {
+                    const move = if (c == @intFromEnum(Movement.PAGE_UP)) @intFromEnum(Movement.MOVE_UP) else @intFromEnum(Movement.MOVE_DOWN);
 
                     self.moveCursor(move);
                 }
@@ -205,7 +205,7 @@ const Editor = struct {
     }
 
     fn open(self: *Editor, filepath: []const u8) !void {
-       const file = try std.fs.cwd().openFile(filepath, .{.mode = .read_only});
+        const file = try std.fs.cwd().openFile(filepath, .{ .mode = .read_only });
         defer file.close();
         while (try file.reader().readUntilDelimiterOrEofAlloc(self.allocator, '\n', 1024 * 1024)) |line| {
             try self.rows.append(line);
@@ -224,7 +224,7 @@ const Editor = struct {
         if (self.cursor_x < self.col_off) {
             self.col_off = self.cursor_x;
         }
-        
+
         if (self.cursor_x >= self.col_off + self.screen_cols) {
             self.col_off = self.cursor_x - self.screen_cols + 1;
         }
@@ -249,32 +249,32 @@ fn editorReadKey() !u16 {
             if (seq[1] >= '0' and seq[1] <= '9') {
                 if (try stdin.reader().read(seq[2..3]) != 1) return '\x1b';
                 if (seq[2] == '~') {
-                        switch (seq[1]) {
-                            '1'  => return @intFromEnum(Movement.HOME_KEY),
-                            '3'  => return @intFromEnum(Movement.DEL_KEY),
-                            '4'  => return @intFromEnum(Movement.END_KEY),
-                            '5'  => return @intFromEnum(Movement.PAGE_UP),
-                            '6'  => return @intFromEnum(Movement.PAGE_DOWN),
-                            '7'  => return @intFromEnum(Movement.HOME_KEY),
-                            '8'  => return @intFromEnum(Movement.END_KEY),
-                            else => return '\x1b',
+                    switch (seq[1]) {
+                        '1' => return @intFromEnum(Movement.HOME_KEY),
+                        '3' => return @intFromEnum(Movement.DEL_KEY),
+                        '4' => return @intFromEnum(Movement.END_KEY),
+                        '5' => return @intFromEnum(Movement.PAGE_UP),
+                        '6' => return @intFromEnum(Movement.PAGE_DOWN),
+                        '7' => return @intFromEnum(Movement.HOME_KEY),
+                        '8' => return @intFromEnum(Movement.END_KEY),
+                        else => return '\x1b',
                     }
                 }
             } else {
                 switch (seq[1]) {
-                    'A'  => return @intFromEnum(Movement.MOVE_UP),
-                    'B'  => return @intFromEnum(Movement.MOVE_DOWN),
-                    'C'  => return @intFromEnum(Movement.MOVE_RIGHT),
-                    'D'  => return @intFromEnum(Movement.MOVE_LEFT),
-                    'H'  => return @intFromEnum(Movement.HOME_KEY),
-                    'F'  => return @intFromEnum(Movement.END_KEY),
+                    'A' => return @intFromEnum(Movement.MOVE_UP),
+                    'B' => return @intFromEnum(Movement.MOVE_DOWN),
+                    'C' => return @intFromEnum(Movement.MOVE_RIGHT),
+                    'D' => return @intFromEnum(Movement.MOVE_LEFT),
+                    'H' => return @intFromEnum(Movement.HOME_KEY),
+                    'F' => return @intFromEnum(Movement.END_KEY),
                     else => return '\x1b',
                 }
-            } 
+            }
         } else if (seq[0] == 'O') {
             switch (seq[1]) {
-                'H'  => return @intFromEnum(Movement.HOME_KEY),
-                'F'  => return @intFromEnum(Movement.END_KEY),
+                'H' => return @intFromEnum(Movement.HOME_KEY),
+                'F' => return @intFromEnum(Movement.END_KEY),
                 else => return '\x1b',
             }
         }
@@ -286,7 +286,7 @@ pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     const allocator = gpa.allocator();
 
-        defer {
+    defer {
         const mem_leak = gpa.deinit();
         switch (mem_leak) {
             .ok => std.debug.print("No memory leak.\n", .{}),
@@ -305,9 +305,9 @@ pub fn main() !void {
     _ = args.skip();
     // TODO! handle the other errors or refactor disableRawMode to not return an err so I can defer it
     if (args.next()) |filepath| editor.open(filepath) catch |e| {
-            try editor.disableRawMode();
-            return e;
-        };
+        try editor.disableRawMode();
+        return e;
+    };
 
     while (try editor.processKeypress()) {
         try editor.editorRefreshScreen();
