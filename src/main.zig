@@ -29,9 +29,8 @@ const Editor = struct {
     col_off: u16,
     allocator: std.mem.Allocator,
 
-    pub fn init(allocator: std.mem.Allocator) !*Editor {
-        var editor = try allocator.create(Editor);
-        editor.* = .{
+    pub fn init(allocator: std.mem.Allocator) Editor {
+        var editor = Editor{
             .origin_termios = null,
             .screen_rows = 0,
             .screen_cols = 0,
@@ -304,16 +303,9 @@ pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     const allocator = gpa.allocator();
 
-    defer {
-        const mem_leak = gpa.deinit();
-        switch (mem_leak) {
-            .ok => std.debug.print("No memory leak.\n", .{}),
-            .leak => std.debug.print("Memory was leaked.", .{}),
-        }
-    }
+    var editor = Editor.init(allocator);
 
-    var editor = try Editor.init(allocator);
-    defer allocator.destroy(editor);
+    defer _ = gpa.detectLeaks();
 
     var args = try std.process.argsWithAllocator(allocator);
     defer std.process.ArgIterator.deinit(&args);
@@ -338,4 +330,5 @@ pub fn main() !void {
 
     try stdout.writer().writeAll("\x1b[2J");
     try stdout.writer().writeAll("\x1b[H");
+
 }
