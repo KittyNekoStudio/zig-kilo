@@ -199,7 +199,7 @@ const Editor = struct {
         const c: u16 = try editorReadKey();
 
         switch (c) {
-            ctrlKey('q') => return false,
+            ctrlKey('y') => return false,
             @intFromEnum(Movement.MOVE_UP), @intFromEnum(Movement.MOVE_DOWN), @intFromEnum(Movement.MOVE_RIGHT), @intFromEnum(Movement.MOVE_LEFT) => self.moveCursor(c),
             @intFromEnum(Movement.PAGE_UP), @intFromEnum(Movement.PAGE_DOWN) => {
                 // TODO! clean this up.
