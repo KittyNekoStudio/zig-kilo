@@ -18,13 +18,31 @@ const Movement = enum(u16) {
 
 const VERSION = "0.0.1";
 
+const Row = struct {
+    row: std.ArrayList(u8),
+    render: std.ArrayList(u8),
+
+    pub fn init(allocator: std.mem.Allocator) Row {
+        return Row {
+            .row = std.ArrayList(u8).init(allocator),
+            .render = std.ArrayList(u8).init(allocator),
+        };
+    }
+
+    pub fn deinit(self: Row) void {
+        self.row.deinit();
+        self.render.deinit();
+    }
+};
+
+
 const Editor = struct {
     origin_termios: ?posix.termios,
     screen_rows: u16,
     screen_cols: u16,
     cursor_x: u16,
     cursor_y: u16,
-    rows: std.ArrayList([]u8),
+    rows: std.ArrayList(Row),
     row_off: u16,
     col_off: u16,
     allocator: std.mem.Allocator,
@@ -36,7 +54,7 @@ const Editor = struct {
             .screen_cols = 0,
             .cursor_x = 0,
             .cursor_y = 0,
-            .rows = std.ArrayList([]u8).init(allocator),
+            .rows = std.ArrayList(Row).init(allocator),
             .row_off = 0,
             .col_off = 0,
             .allocator = allocator,
@@ -148,11 +166,12 @@ const Editor = struct {
                 }
             } else {
                 var len: usize = 0;
-                if (self.col_off < self.rows.items[filerow].len) len = self.rows.items[filerow].len - self.col_off;
+                if (self.col_off < self.rows.items[filerow].row.items.len) len 
+                    = self.rows.items[filerow].row.items.len - self.col_off;
                 if (len > self.screen_cols) len = self.screen_cols;
 
                 if (len != 0) {
-                    try writer.writeAll(self.rows.items[filerow][self.col_off .. self.col_off + len]);
+                    try writer.writeAll(self.rows.items[filerow].row.items[self.col_off .. self.col_off + len]);
                 }
             }
             try writer.writeAll("\x1b[K");
@@ -163,7 +182,7 @@ const Editor = struct {
     }
 
     fn moveCursor(self: *Editor, key: u16) void {
-        var row = if (self.cursor_y >= self.rows.items.len) null else self.rows.items[self.cursor_y];
+        var row = if (self.cursor_y >= self.rows.items.len) null else self.rows.items[self.cursor_y].row.items;
         switch (key) {
             @intFromEnum(Movement.MOVE_UP) => if (self.cursor_y != 0) {
                 self.cursor_y -= 1;
@@ -183,11 +202,11 @@ const Editor = struct {
                 self.cursor_x -= 1;
             } else if (self.cursor_y > 0) {
                 self.cursor_y -= 1;
-                self.cursor_x = @intCast(self.rows.items[self.cursor_y].len);
+                self.cursor_x = @intCast(self.rows.items[self.cursor_y].row.items.len);
             },
             else => {},
         }
-        row = if (self.cursor_y >= self.rows.items.len) null else self.rows.items[self.cursor_y];
+        row = if (self.cursor_y >= self.rows.items.len) null else self.rows.items[self.cursor_y].row.items;
         const rowlen = if (row != null) row.?.len else 0;
         if (self.cursor_x > rowlen) {
             self.cursor_x = @intCast(rowlen);
@@ -212,7 +231,7 @@ const Editor = struct {
             @intFromEnum(Movement.HOME_KEY) => self.cursor_x = 0,
             @intFromEnum(Movement.END_KEY) => {
                 while (true) {
-                    if (self.cursor_x >= self.rows.items[self.cursor_y].len) break else self.cursor_x += 1;
+                    if (self.cursor_x >= self.rows.items[self.cursor_y].row.items.len) break else self.cursor_x += 1;
                 }
             },
 
@@ -221,11 +240,18 @@ const Editor = struct {
         return true;
     }
 
+    fn appendRow(self: *Editor, line: []u8) !void {
+        var row = Row.init(self.allocator);
+        try row.row.appendSlice(line);
+        try self.rows.append(row);
+    }
+
     fn open(self: *Editor, filepath: []const u8) !void {
         const file = try std.fs.cwd().openFile(filepath, .{ .mode = .read_only });
         defer file.close();
-        while (try file.reader().readUntilDelimiterOrEofAlloc(self.allocator, '\n', 1024 * 1024)) |line| {
-            try self.rows.append(line);
+        var buffer: [1000]u8 = undefined;
+        while (try file.reader().readUntilDelimiterOrEof(buffer[0..], '\n')) |line| {
+            try self.appendRow(line);
         }
     }
 
@@ -324,11 +350,9 @@ pub fn main() !void {
     }
 
     try editor.disableRawMode();
-
-    for (editor.rows.items) |item| editor.allocator.free(item);
-    editor.rows.deinit();
-
     try stdout.writer().writeAll("\x1b[2J");
     try stdout.writer().writeAll("\x1b[H");
 
+    for (editor.rows.items) |*row| row.deinit();
+    editor.rows.deinit();
 }
