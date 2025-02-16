@@ -246,7 +246,7 @@ const Editor = struct {
         try self.rows.append(row);
     }
 
-    fn open(self: *Editor, filepath: []const u8) !void {
+    fn open(self: *Editor, filepath: []u8) !void {
         const file = try std.fs.cwd().openFile(filepath, .{ .mode = .read_only });
         defer file.close();
         var buffer: [1000]u8 = undefined;
@@ -333,17 +333,11 @@ pub fn main() !void {
 
     defer _ = gpa.detectLeaks();
 
-    var args = try std.process.argsWithAllocator(allocator);
-    defer std.process.ArgIterator.deinit(&args);
-
     try editor.enableRawMode();
 
-    _ = args.skip();
-    // TODO! handle the other errors or refactor disableRawMode to not return an err so I can defer it
-    if (args.next()) |filepath| editor.open(filepath) catch |e| {
-        try editor.disableRawMode();
-        return e;
-    };
+    const args = try std.process.argsAlloc(allocator);
+    defer std.process.argsFree(allocator, args);
+    try editor.open(args[1]);
 
     while (try editor.processKeypress()) {
         try editor.editorRefreshScreen();
@@ -355,4 +349,7 @@ pub fn main() !void {
 
     for (editor.rows.items) |*row| row.deinit();
     editor.rows.deinit();
+
+    // TODO! handle the other errors or refactor disableRawMode to not return an err so I can defer it
+    try editor.disableRawMode();
 }
