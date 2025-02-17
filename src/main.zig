@@ -53,7 +53,8 @@ const Editor = struct {
     origin_termios: ?posix.termios,
     screen_rows: u16,
     screen_cols: u16,
-    cursor_x: u16,
+    cursor_row_x: u16,
+    cursor_render_x: u16,
     cursor_y: u16,
     rows: std.ArrayList(Row),
     row_off: u16,
@@ -65,7 +66,8 @@ const Editor = struct {
             .origin_termios = null,
             .screen_rows = 0,
             .screen_cols = 0,
-            .cursor_x = 0,
+            .cursor_row_x = 0,
+            .cursor_render_x = 0,
             .cursor_y = 0,
             .rows = std.ArrayList(Row).init(allocator),
             .row_off = 0,
@@ -131,7 +133,7 @@ const Editor = struct {
         return 0;
     }
 
-    fn editorRefreshScreen(self: *Editor) !void {
+    fn refreshScreen(self: *Editor) !void {
         self.scroll();
 
         var buffer = std.ArrayList(u8).init(self.allocator);
@@ -145,7 +147,7 @@ const Editor = struct {
         try self.drawRows(writer);
 
         // TODO! find a better way to format strings.
-        const move_cursor = try std.fmt.allocPrint(self.allocator, "\x1b[{d};{d}H", .{ (self.cursor_y - self.row_off) + 1, (self.cursor_x - self.col_off) + 1 });
+        const move_cursor = try std.fmt.allocPrint(self.allocator, "\x1b[{d};{d}H", .{ (self.cursor_y - self.row_off) + 1, (self.cursor_render_x - self.col_off) + 1 });
         defer self.allocator.free(move_cursor);
         try writer.writeAll(move_cursor);
 
@@ -203,25 +205,25 @@ const Editor = struct {
                 self.cursor_y += 1;
             },
             @intFromEnum(Movement.MOVE_RIGHT) => {
-                if (row != null and self.cursor_x < row.?.len) {
-                    self.cursor_x += 1;
-                } else if (row != null and self.cursor_x == row.?.len) {
+                if (row != null and self.cursor_row_x < row.?.len) {
+                    self.cursor_row_x += 1;
+                } else if (row != null and self.cursor_row_x == row.?.len) {
                     self.cursor_y += 1;
-                    self.cursor_x = 0;
+                    self.cursor_row_x = 0;
                 }
             },
-            @intFromEnum(Movement.MOVE_LEFT) => if (self.cursor_x != 0) {
-                self.cursor_x -= 1;
+            @intFromEnum(Movement.MOVE_LEFT) => if (self.cursor_row_x != 0) {
+                self.cursor_row_x -= 1;
             } else if (self.cursor_y > 0) {
                 self.cursor_y -= 1;
-                self.cursor_x = @intCast(self.rows.items[self.cursor_y].render.items.len);
+                self.cursor_row_x = @intCast(self.rows.items[self.cursor_y].row.items.len);
             },
             else => {},
         }
         row = if (self.cursor_y >= self.rows.items.len) null else self.rows.items[self.cursor_y].render.items;
         const rowlen = if (row != null) row.?.len else 0;
-        if (self.cursor_x > rowlen) {
-            self.cursor_x = @intCast(rowlen);
+        if (self.cursor_row_x > rowlen) {
+            self.cursor_row_x = @intCast(rowlen);
         }
     }
 
@@ -232,21 +234,26 @@ const Editor = struct {
             ctrlKey('y') => return false,
             @intFromEnum(Movement.MOVE_UP), @intFromEnum(Movement.MOVE_DOWN), @intFromEnum(Movement.MOVE_RIGHT), @intFromEnum(Movement.MOVE_LEFT) => self.moveCursor(c),
             @intFromEnum(Movement.PAGE_UP), @intFromEnum(Movement.PAGE_DOWN) => {
-                // TODO! clean this up.
+                if (c == @intFromEnum(Movement.PAGE_UP)) {
+                    self.cursor_y = self.row_off;
+                } else if (c == @intFromEnum(Movement.PAGE_DOWN)) {
+                    self.cursor_y = self.row_off + self.screen_rows - 1;
+                    if (self.cursor_y > self.rows.items.len) self.cursor_y = @intCast(self.rows.items.len);
+                }
+
                 var times = self.screen_rows;
                 while (times > 0) : (times -= 1) {
-                    const move = if (c == @intFromEnum(Movement.PAGE_UP)) @intFromEnum(Movement.MOVE_UP) else @intFromEnum(Movement.MOVE_DOWN);
-
-                    self.moveCursor(move);
+                    self.moveCursor(if (c == @intFromEnum(Movement.PAGE_UP))
+                        @intFromEnum(Movement.MOVE_UP)
+                    else
+                        @intFromEnum(Movement.MOVE_DOWN));
                 }
             },
-            @intFromEnum(Movement.HOME_KEY) => self.cursor_x = 0,
-            @intFromEnum(Movement.END_KEY) => {
-                while (true) {
-                    if (self.cursor_x >= self.rows.items[self.cursor_y].render.items.len) break else self.cursor_x += 1;
-                }
+            @intFromEnum(Movement.HOME_KEY) => self.cursor_row_x = 0,
+            @intFromEnum(Movement.END_KEY) => if (self.cursor_y < self.rows.items.len) {
+                // TODO! fix this up
+                self.cursor_row_x = @intCast(self.rows.items[self.cursor_y].render.items.len);
             },
-
             else => {},
         }
         return true;
@@ -271,6 +278,12 @@ const Editor = struct {
     }
 
     fn scroll(self: *Editor) void {
+        self.cursor_render_x = 0;
+
+        if (self.cursor_y < self.rows.items.len) {
+            self.cursor_render_x = self.rowCursorToRenderCursor(self.rows.items[self.cursor_y]);
+        }
+
         if (self.cursor_y < self.row_off) {
             self.row_off = self.cursor_y;
         }
@@ -279,13 +292,25 @@ const Editor = struct {
             self.row_off = self.cursor_y - self.screen_rows + 1;
         }
 
-        if (self.cursor_x < self.col_off) {
-            self.col_off = self.cursor_x;
+        if (self.cursor_render_x < self.col_off) {
+            self.col_off = self.cursor_render_x;
         }
 
-        if (self.cursor_x >= self.col_off + self.screen_cols) {
-            self.col_off = self.cursor_x - self.screen_cols + 1;
+        if (self.cursor_render_x >= self.col_off + self.screen_cols) {
+            self.col_off = self.cursor_render_x - self.screen_cols + 1;
         }
+    }
+
+    fn rowCursorToRenderCursor(self: Editor, row: Row) u16 {
+        var render_cursor: u16 = 0;
+
+        for (0..self.cursor_row_x) |i| {
+            render_cursor += 1;
+
+            if (row.row.items[i] == '\t') render_cursor += (TAB_STOP - 1) - (render_cursor % TAB_STOP);
+        }
+
+        return render_cursor;
     }
 };
 
@@ -355,16 +380,14 @@ pub fn main() !void {
     if (args.len > 1) try editor.open(args[1]);
 
     while (try editor.processKeypress()) {
-        try editor.editorRefreshScreen();
+        try editor.refreshScreen();
     }
 
+    // TODO! handle the other errors or refactor disableRawMode to not return an err so I can defer it
     try editor.disableRawMode();
     try stdout.writer().writeAll("\x1b[2J");
     try stdout.writer().writeAll("\x1b[H");
 
     for (editor.rows.items) |*row| row.deinit();
     editor.rows.deinit();
-
-    // TODO! handle the other errors or refactor disableRawMode to not return an err so I can defer it
-    try editor.disableRawMode();
 }
