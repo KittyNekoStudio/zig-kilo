@@ -196,7 +196,7 @@ const Editor = struct {
     }
 
     fn moveCursor(self: *Editor, key: u16) void {
-        var row = if (self.cursor_y >= self.rows.items.len) null else self.rows.items[self.cursor_y].render.items;
+        var row = if (self.cursor_y >= self.rows.items.len) null else self.rows.items[self.cursor_y].row.items;
         switch (key) {
             @intFromEnum(Movement.MOVE_UP) => if (self.cursor_y != 0) {
                 self.cursor_y -= 1;
@@ -251,8 +251,7 @@ const Editor = struct {
             },
             @intFromEnum(Movement.HOME_KEY) => self.cursor_row_x = 0,
             @intFromEnum(Movement.END_KEY) => if (self.cursor_y < self.rows.items.len) {
-                // TODO! fix this up
-                self.cursor_row_x = @intCast(self.rows.items[self.cursor_y].render.items.len);
+                self.cursor_row_x = @intCast(self.rows.items[self.cursor_y].row.items.len);
             },
             else => {},
         }
@@ -305,9 +304,8 @@ const Editor = struct {
         var render_cursor: u16 = 0;
 
         for (0..self.cursor_row_x) |i| {
-            render_cursor += 1;
-
             if (row.row.items[i] == '\t') render_cursor += (TAB_STOP - 1) - (render_cursor % TAB_STOP);
+            render_cursor += 1;
         }
 
         return render_cursor;
