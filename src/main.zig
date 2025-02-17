@@ -17,13 +17,14 @@ const Movement = enum(u16) {
 };
 
 const VERSION = "0.0.1";
+const TAB_STOP = 8;
 
 const Row = struct {
     row: std.ArrayList(u8),
     render: std.ArrayList(u8),
 
     pub fn init(allocator: std.mem.Allocator) Row {
-        return Row {
+        return Row{
             .row = std.ArrayList(u8).init(allocator),
             .render = std.ArrayList(u8).init(allocator),
         };
@@ -33,8 +34,20 @@ const Row = struct {
         self.row.deinit();
         self.render.deinit();
     }
-};
 
+    fn updateRow(self: *Row) !void {
+        self.render.clearAndFree();
+        for (self.row.items) |char| {
+            if (char == '\t') {
+                for (0..TAB_STOP) |_| {
+                    try self.render.append(' ');
+                }
+            } else {
+                try self.render.append(char);
+            }
+        }
+    }
+};
 
 const Editor = struct {
     origin_termios: ?posix.termios,
@@ -166,12 +179,11 @@ const Editor = struct {
                 }
             } else {
                 var len: usize = 0;
-                if (self.col_off < self.rows.items[filerow].row.items.len) len 
-                    = self.rows.items[filerow].row.items.len - self.col_off;
+                if (self.col_off < self.rows.items[filerow].render.items.len) len = self.rows.items[filerow].render.items.len - self.col_off;
                 if (len > self.screen_cols) len = self.screen_cols;
 
                 if (len != 0) {
-                    try writer.writeAll(self.rows.items[filerow].row.items[self.col_off .. self.col_off + len]);
+                    try writer.writeAll(self.rows.items[filerow].render.items[self.col_off .. self.col_off + len]);
                 }
             }
             try writer.writeAll("\x1b[K");
@@ -182,7 +194,7 @@ const Editor = struct {
     }
 
     fn moveCursor(self: *Editor, key: u16) void {
-        var row = if (self.cursor_y >= self.rows.items.len) null else self.rows.items[self.cursor_y].row.items;
+        var row = if (self.cursor_y >= self.rows.items.len) null else self.rows.items[self.cursor_y].render.items;
         switch (key) {
             @intFromEnum(Movement.MOVE_UP) => if (self.cursor_y != 0) {
                 self.cursor_y -= 1;
@@ -202,11 +214,11 @@ const Editor = struct {
                 self.cursor_x -= 1;
             } else if (self.cursor_y > 0) {
                 self.cursor_y -= 1;
-                self.cursor_x = @intCast(self.rows.items[self.cursor_y].row.items.len);
+                self.cursor_x = @intCast(self.rows.items[self.cursor_y].render.items.len);
             },
             else => {},
         }
-        row = if (self.cursor_y >= self.rows.items.len) null else self.rows.items[self.cursor_y].row.items;
+        row = if (self.cursor_y >= self.rows.items.len) null else self.rows.items[self.cursor_y].render.items;
         const rowlen = if (row != null) row.?.len else 0;
         if (self.cursor_x > rowlen) {
             self.cursor_x = @intCast(rowlen);
@@ -231,7 +243,7 @@ const Editor = struct {
             @intFromEnum(Movement.HOME_KEY) => self.cursor_x = 0,
             @intFromEnum(Movement.END_KEY) => {
                 while (true) {
-                    if (self.cursor_x >= self.rows.items[self.cursor_y].row.items.len) break else self.cursor_x += 1;
+                    if (self.cursor_x >= self.rows.items[self.cursor_y].render.items.len) break else self.cursor_x += 1;
                 }
             },
 
@@ -243,8 +255,11 @@ const Editor = struct {
     fn appendRow(self: *Editor, line: []u8) !void {
         var row = Row.init(self.allocator);
         try row.row.appendSlice(line);
+        try row.updateRow();
         try self.rows.append(row);
     }
+
+    // TODO! move this out of editor
 
     fn open(self: *Editor, filepath: []u8) !void {
         const file = try std.fs.cwd().openFile(filepath, .{ .mode = .read_only });
@@ -337,7 +352,7 @@ pub fn main() !void {
 
     const args = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, args);
-    try editor.open(args[1]);
+    if (args.len > 1) try editor.open(args[1]);
 
     while (try editor.processKeypress()) {
         try editor.editorRefreshScreen();
