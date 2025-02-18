@@ -56,6 +56,9 @@ const Editor = struct {
     cursor_row_x: u16,
     cursor_render_x: u16,
     cursor_y: u16,
+    file_name: std.ArrayList(u8),
+    status_message: [1024]u8,
+    status_message_time: i64,
     rows: std.ArrayList(Row),
     row_off: u16,
     col_off: u16,
@@ -69,6 +72,9 @@ const Editor = struct {
             .cursor_row_x = 0,
             .cursor_render_x = 0,
             .cursor_y = 0,
+            .file_name = std.ArrayList(u8).init(allocator),
+            .status_message = undefined,
+            .status_message_time = 0,
             .rows = std.ArrayList(Row).init(allocator),
             .row_off = 0,
             .col_off = 0,
@@ -126,7 +132,7 @@ const Editor = struct {
         if (std.posix.system.ioctl(stdout.handle, posix.system.T.IOCGWINSZ, @intFromPtr(&win_size)) == -1 or win_size.ws_col == 0) {
             return -1;
         } else {
-            self.screen_rows = win_size.ws_row;
+            self.screen_rows = win_size.ws_row - 2;
             self.screen_cols = win_size.ws_col;
         }
 
@@ -145,6 +151,8 @@ const Editor = struct {
         try writer.writeAll("\x1b[H");
 
         try self.drawRows(writer);
+        try self.drawStatusBar(writer);
+        try self.drawMessageBar(writer);
 
         // TODO! find a better way to format strings.
         const move_cursor = try std.fmt.allocPrint(self.allocator, "\x1b[{d};{d}H", .{ (self.cursor_y - self.row_off) + 1, (self.cursor_render_x - self.col_off) + 1 });
@@ -154,6 +162,11 @@ const Editor = struct {
         try writer.writeAll("\x1b[?25h");
 
         try stdout.writer().writeAll(buffer.items);
+    }
+
+    fn setStatusMessage(self: *Editor, comptime fmt: []const u8, args: anytype) !void {
+        _ = try std.fmt.bufPrint(&self.status_message, fmt, args);
+        self.status_message_time = std.time.timestamp();
     }
 
     fn drawRows(self: *Editor, writer: anytype) !void {
@@ -189,10 +202,45 @@ const Editor = struct {
                 }
             }
             try writer.writeAll("\x1b[K");
-            if (y < self.screen_rows - 1) {
-                try writer.writeAll("\r\n");
+            try writer.writeAll("\r\n");
+        }
+    }
+
+    fn drawStatusBar(self: Editor, writer: anytype) !void {
+        try writer.writeAll("\x1b[7m");
+
+        var status = try std.fmt.allocPrint(self.allocator, "{s} - {d} lines", .{ if (self.file_name.items.len == 0) "[No Name]" else self.file_name.items, self.rows.items.len });
+        defer self.allocator.free(status);
+
+        const rstatus = try std.fmt.allocPrint(self.allocator, "{d}", .{self.cursor_y + 1});
+        defer self.allocator.free(rstatus);
+
+        if (status.len > self.screen_cols) status = status[0..self.screen_cols];
+
+        try writer.writeAll(status);
+
+        for (status.len..self.screen_cols) |len| {
+            if (self.screen_cols - len == rstatus.len) {
+                try writer.writeAll(rstatus);
+                break;
+            } else {
+                try writer.writeAll(" ");
             }
         }
+
+        try writer.writeAll("\x1b[m");
+        try writer.writeAll("\r\n");
+    }
+
+    fn drawMessageBar(self: *Editor, writer: anytype) !void {
+        try writer.writeAll("\x1b[K");
+
+        var message_len = self.status_message.len;
+        if (message_len > self.screen_cols) message_len = self.screen_cols;
+        if (message_len != 0) {
+            if (std.time.timestamp() - self.status_message_time < 5) try writer.writeAll(self.status_message[0..message_len]);
+        }
+
     }
 
     fn moveCursor(self: *Editor, key: u16) void {
@@ -265,9 +313,9 @@ const Editor = struct {
         try self.rows.append(row);
     }
 
-    // TODO! move this out of editor
-
     fn open(self: *Editor, filepath: []u8) !void {
+        try self.file_name.appendSlice(filepath);
+
         const file = try std.fs.cwd().openFile(filepath, .{ .mode = .read_only });
         defer file.close();
         var buffer: [1000]u8 = undefined;
@@ -365,11 +413,13 @@ fn editorReadKey() !u16 {
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.detectLeaks();
     const allocator = gpa.allocator();
 
     var editor = Editor.init(allocator);
+    defer editor.file_name.deinit();
 
-    defer _ = gpa.detectLeaks();
+    try editor.setStatusMessage("HELP: Ctrl-Y = quit", .{});
 
     try editor.enableRawMode();
 
