@@ -47,6 +47,13 @@ const Row = struct {
             }
         }
     }
+
+    fn insertChar(self: *Row, at: usize, char: u8) !void {
+        var at_in = at;
+        if (at_in < 0 or at_in > self.row.items.len) at_in = self.row.items.len;
+        try self.row.insert(at_in, char);
+        try self.updateRow();
+    }
 };
 
 const Editor = struct {
@@ -301,7 +308,7 @@ const Editor = struct {
             @intFromEnum(Movement.END_KEY) => if (self.cursor_y < self.rows.items.len) {
                 self.cursor_row_x = @intCast(self.rows.items[self.cursor_y].row.items.len);
             },
-            else => {},
+            else => if (c != 0) try self.insertChar(@intCast(c))
         }
         return true;
     }
@@ -358,6 +365,12 @@ const Editor = struct {
 
         return render_cursor;
     }
+
+    fn insertChar(self: *Editor, char: u8) !void {
+        if (self.cursor_y == self.rows.items.len) try self.appendRow("");
+        try self.rows.items[self.cursor_y].insertChar(self.cursor_row_x, char);
+        self.cursor_row_x += 1;
+    }
 };
 
 fn ctrlKey(key: u8) u8 {
@@ -365,10 +378,11 @@ fn ctrlKey(key: u8) u8 {
 }
 
 fn editorReadKey() !u16 {
-    var buffer: [1]u8 = undefined;
-    _ = try stdin.reader().read(&buffer);
+    var buffer: u8 = undefined;
 
-    if (buffer[0] == '\x1b') {
+    if (stdin.reader().readByte()) |key| buffer = key else |_| buffer = 0;
+
+    if (buffer == '\x1b') {
         var seq: [3]u8 = undefined;
 
         if (try stdin.reader().read(seq[0..1]) != 1) return '\x1b';
@@ -408,7 +422,7 @@ fn editorReadKey() !u16 {
             }
         }
     }
-    return buffer[0];
+    return buffer;
 }
 
 pub fn main() !void {
