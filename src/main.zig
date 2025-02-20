@@ -4,7 +4,8 @@ const posix = std.posix;
 const stdin = std.io.getStdIn();
 const stdout = std.io.getStdOut();
 
-const Movement = enum(u16) {
+const Key = enum(u16) {
+    BACKSPACE = 127,
     MOVE_LEFT = 1000,
     MOVE_RIGHT,
     MOVE_UP,
@@ -247,19 +248,18 @@ const Editor = struct {
         if (message_len != 0) {
             if (std.time.timestamp() - self.status_message_time < 5) try writer.writeAll(self.status_message[0..message_len]);
         }
-
     }
 
     fn moveCursor(self: *Editor, key: u16) void {
         var row = if (self.cursor_y >= self.rows.items.len) null else self.rows.items[self.cursor_y].row.items;
         switch (key) {
-            @intFromEnum(Movement.MOVE_UP) => if (self.cursor_y != 0) {
+            @intFromEnum(Key.MOVE_UP) => if (self.cursor_y != 0) {
                 self.cursor_y -= 1;
             },
-            @intFromEnum(Movement.MOVE_DOWN) => if (self.cursor_y < self.rows.items.len) {
+            @intFromEnum(Key.MOVE_DOWN) => if (self.cursor_y < self.rows.items.len) {
                 self.cursor_y += 1;
             },
-            @intFromEnum(Movement.MOVE_RIGHT) => {
+            @intFromEnum(Key.MOVE_RIGHT) => {
                 if (row != null and self.cursor_row_x < row.?.len) {
                     self.cursor_row_x += 1;
                 } else if (row != null and self.cursor_row_x == row.?.len) {
@@ -267,7 +267,7 @@ const Editor = struct {
                     self.cursor_row_x = 0;
                 }
             },
-            @intFromEnum(Movement.MOVE_LEFT) => if (self.cursor_row_x != 0) {
+            @intFromEnum(Key.MOVE_LEFT) => if (self.cursor_row_x != 0) {
                 self.cursor_row_x -= 1;
             } else if (self.cursor_y > 0) {
                 self.cursor_y -= 1;
@@ -287,28 +287,36 @@ const Editor = struct {
 
         switch (c) {
             ctrlKey('y') => return false,
-            @intFromEnum(Movement.MOVE_UP), @intFromEnum(Movement.MOVE_DOWN), @intFromEnum(Movement.MOVE_RIGHT), @intFromEnum(Movement.MOVE_LEFT) => self.moveCursor(c),
-            @intFromEnum(Movement.PAGE_UP), @intFromEnum(Movement.PAGE_DOWN) => {
-                if (c == @intFromEnum(Movement.PAGE_UP)) {
+            @intFromEnum(Key.MOVE_UP), @intFromEnum(Key.MOVE_DOWN), @intFromEnum(Key.MOVE_RIGHT), @intFromEnum(Key.MOVE_LEFT) => self.moveCursor(c),
+            @intFromEnum(Key.PAGE_UP), @intFromEnum(Key.PAGE_DOWN) => {
+                if (c == @intFromEnum(Key.PAGE_UP)) {
                     self.cursor_y = self.row_off;
-                } else if (c == @intFromEnum(Movement.PAGE_DOWN)) {
+                } else if (c == @intFromEnum(Key.PAGE_DOWN)) {
                     self.cursor_y = self.row_off + self.screen_rows - 1;
                     if (self.cursor_y > self.rows.items.len) self.cursor_y = @intCast(self.rows.items.len);
                 }
 
                 var times = self.screen_rows;
                 while (times > 0) : (times -= 1) {
-                    self.moveCursor(if (c == @intFromEnum(Movement.PAGE_UP))
-                        @intFromEnum(Movement.MOVE_UP)
+                    self.moveCursor(if (c == @intFromEnum(Key.PAGE_UP))
+                        @intFromEnum(Key.MOVE_UP)
                     else
-                        @intFromEnum(Movement.MOVE_DOWN));
+                        @intFromEnum(Key.MOVE_DOWN));
                 }
             },
-            @intFromEnum(Movement.HOME_KEY) => self.cursor_row_x = 0,
-            @intFromEnum(Movement.END_KEY) => if (self.cursor_y < self.rows.items.len) {
+            @intFromEnum(Key.HOME_KEY) => self.cursor_row_x = 0,
+            @intFromEnum(Key.END_KEY) => if (self.cursor_y < self.rows.items.len) {
                 self.cursor_row_x = @intCast(self.rows.items[self.cursor_y].row.items.len);
             },
-            else => if (c != 0) try self.insertChar(@intCast(c))
+            ctrlKey('s') => try self.save(),
+            // TODO! implement keys
+            ctrlKey('h') => {},
+            ctrlKey('l') => {},
+            '\r' => {},
+            '\x1b' => {},
+            @intFromEnum(Key.BACKSPACE) => {},
+            @intFromEnum(Key.DEL_KEY) => {},
+            else => if (c != 0) try self.insertChar(@intCast(c)),
         }
         return true;
     }
@@ -323,9 +331,19 @@ const Editor = struct {
     fn open(self: *Editor, filepath: []u8) !void {
         try self.file_name.appendSlice(filepath);
 
-        const file = try std.fs.cwd().openFile(filepath, .{ .mode = .read_only });
+        // Wow I can actually write zig code
+        const file = std.fs.cwd().openFile(filepath, .{ .mode = .read_only }) catch |err| file: {
+                switch (err) {
+                    error.FileNotFound => {
+                        break :file try std.fs.cwd().createFile(filepath, .{ .read = true }); 
+                    },
+                    else => return err,
+                }
+            };
         defer file.close();
+
         var buffer: [1000]u8 = undefined;
+
         while (try file.reader().readUntilDelimiterOrEof(buffer[0..], '\n')) |line| {
             try self.appendRow(line);
         }
@@ -371,6 +389,26 @@ const Editor = struct {
         try self.rows.items[self.cursor_y].insertChar(self.cursor_row_x, char);
         self.cursor_row_x += 1;
     }
+
+    fn rowsToString(self: *Editor) !std.ArrayList(u8) {
+        var buffer = std.ArrayList(u8).init(self.allocator);
+        for (0..self.rows.items.len) |i| {
+            try buffer.appendSlice(self.rows.items[i].row.items);
+            try buffer.append('\n');
+        }
+        return buffer;
+    }
+
+    fn save(self: *Editor) !void {
+        if (self.file_name.items.len == 0) return;
+
+        const buffer = try self.rowsToString();
+        defer buffer.deinit();
+
+        const file = try std.fs.cwd().openFile(self.file_name.items, .{ .mode = .write_only });
+        defer file.close();
+        _ = try file.write(buffer.items);
+    }
 };
 
 fn ctrlKey(key: u8) u8 {
@@ -393,31 +431,31 @@ fn editorReadKey() !u16 {
                 if (try stdin.reader().read(seq[2..3]) != 1) return '\x1b';
                 if (seq[2] == '~') {
                     switch (seq[1]) {
-                        '1' => return @intFromEnum(Movement.HOME_KEY),
-                        '3' => return @intFromEnum(Movement.DEL_KEY),
-                        '4' => return @intFromEnum(Movement.END_KEY),
-                        '5' => return @intFromEnum(Movement.PAGE_UP),
-                        '6' => return @intFromEnum(Movement.PAGE_DOWN),
-                        '7' => return @intFromEnum(Movement.HOME_KEY),
-                        '8' => return @intFromEnum(Movement.END_KEY),
+                        '1' => return @intFromEnum(Key.HOME_KEY),
+                        '3' => return @intFromEnum(Key.DEL_KEY),
+                        '4' => return @intFromEnum(Key.END_KEY),
+                        '5' => return @intFromEnum(Key.PAGE_UP),
+                        '6' => return @intFromEnum(Key.PAGE_DOWN),
+                        '7' => return @intFromEnum(Key.HOME_KEY),
+                        '8' => return @intFromEnum(Key.END_KEY),
                         else => return '\x1b',
                     }
                 }
             } else {
                 switch (seq[1]) {
-                    'A' => return @intFromEnum(Movement.MOVE_UP),
-                    'B' => return @intFromEnum(Movement.MOVE_DOWN),
-                    'C' => return @intFromEnum(Movement.MOVE_RIGHT),
-                    'D' => return @intFromEnum(Movement.MOVE_LEFT),
-                    'H' => return @intFromEnum(Movement.HOME_KEY),
-                    'F' => return @intFromEnum(Movement.END_KEY),
+                    'A' => return @intFromEnum(Key.MOVE_UP),
+                    'B' => return @intFromEnum(Key.MOVE_DOWN),
+                    'C' => return @intFromEnum(Key.MOVE_RIGHT),
+                    'D' => return @intFromEnum(Key.MOVE_LEFT),
+                    'H' => return @intFromEnum(Key.HOME_KEY),
+                    'F' => return @intFromEnum(Key.END_KEY),
                     else => return '\x1b',
                 }
             }
         } else if (seq[0] == 'O') {
             switch (seq[1]) {
-                'H' => return @intFromEnum(Movement.HOME_KEY),
-                'F' => return @intFromEnum(Movement.END_KEY),
+                'H' => return @intFromEnum(Key.HOME_KEY),
+                'F' => return @intFromEnum(Key.END_KEY),
                 else => return '\x1b',
             }
         }
@@ -439,6 +477,7 @@ pub fn main() !void {
 
     const args = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, args);
+
     if (args.len > 1) try editor.open(args[1]);
 
     while (try editor.processKeypress()) {
