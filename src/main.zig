@@ -18,6 +18,7 @@ const Key = enum(u16) {
 };
 
 const VERSION = "0.0.1";
+const QUIT_TIMES = 3;
 const TAB_STOP = 8;
 
 const Row = struct {
@@ -68,6 +69,9 @@ const Editor = struct {
     status_message: [1024]u8,
     status_message_time: i64,
     rows: std.ArrayList(Row),
+    dirty: u8,
+    // TODO! are there static variables in zig?
+    quit_times: u8,
     row_off: u16,
     col_off: u16,
     allocator: std.mem.Allocator,
@@ -84,6 +88,8 @@ const Editor = struct {
             .status_message = undefined,
             .status_message_time = 0,
             .rows = std.ArrayList(Row).init(allocator),
+            .dirty = 0,
+            .quit_times = QUIT_TIMES,
             .row_off = 0,
             .col_off = 0,
             .allocator = allocator,
@@ -173,6 +179,8 @@ const Editor = struct {
     }
 
     fn setStatusMessage(self: *Editor, comptime fmt: []const u8, args: anytype) !void {
+        // TODO! find a better way to clear buffer. Switch to ArrayList?
+        @memset(&self.status_message, 0);
         _ = try std.fmt.bufPrint(&self.status_message, fmt, args);
         self.status_message_time = std.time.timestamp();
     }
@@ -217,7 +225,7 @@ const Editor = struct {
     fn drawStatusBar(self: Editor, writer: anytype) !void {
         try writer.writeAll("\x1b[7m");
 
-        var status = try std.fmt.allocPrint(self.allocator, "{s} - {d} lines", .{ if (self.file_name.items.len == 0) "[No Name]" else self.file_name.items, self.rows.items.len });
+        var status = try std.fmt.allocPrint(self.allocator, "{s} - {d} lines {s}", .{ if (self.file_name.items.len == 0) "[No Name]" else self.file_name.items, self.rows.items.len, if (self.dirty != 0) "(modified)" else "" });
         defer self.allocator.free(status);
 
         const rstatus = try std.fmt.allocPrint(self.allocator, "{d}", .{self.cursor_y + 1});
@@ -286,9 +294,16 @@ const Editor = struct {
 
     fn processKeypress(self: *Editor) !bool {
         const c: u16 = try editorReadKey();
+        var quit = false;
 
+        if (c == 0) return quit;
         switch (c) {
-            ctrlKey('y') => return false,
+            ctrlKey('y') => if (self.dirty != 0) {
+                self.quit_times -= 1;
+                try self.setStatusMessage("WARNING!!! File has unsaved changes. Press Ctrl-Y {d} more times to quit.", .{self.quit_times});
+            } else {
+                quit = true;
+            },
             @intFromEnum(Key.MOVE_UP), @intFromEnum(Key.MOVE_DOWN), @intFromEnum(Key.MOVE_RIGHT), @intFromEnum(Key.MOVE_LEFT) => self.moveCursor(c),
             @intFromEnum(Key.PAGE_UP), @intFromEnum(Key.PAGE_DOWN) => {
                 if (c == @intFromEnum(Key.PAGE_UP)) {
@@ -318,9 +333,11 @@ const Editor = struct {
             '\x1b' => {},
             @intFromEnum(Key.BACKSPACE) => {},
             @intFromEnum(Key.DEL_KEY) => {},
-            else => if (c != 0) try self.insertChar(@intCast(c)),
+            else => try self.insertChar(@intCast(c)),
         }
-        return true;
+
+        if (self.dirty > 0 and self.quit_times == 0) quit = true;
+        return quit;
     }
 
     fn appendRow(self: *Editor, line: []u8) !void {
@@ -328,6 +345,7 @@ const Editor = struct {
         try row.row.appendSlice(line);
         try row.updateRow();
         try self.rows.append(row);
+        self.dirty += 1;
     }
 
     fn open(self: *Editor, filepath: []u8) !void {
@@ -335,13 +353,13 @@ const Editor = struct {
 
         // Wow I can actually write zig code
         const file = std.fs.cwd().openFile(filepath, .{ .mode = .read_only }) catch |err| file: {
-                switch (err) {
-                    error.FileNotFound => {
-                        break :file try std.fs.cwd().createFile(filepath, .{ .read = true }); 
-                    },
-                    else => return err,
-                }
-            };
+            switch (err) {
+                error.FileNotFound => {
+                    break :file try std.fs.cwd().createFile(filepath, .{ .read = true });
+                },
+                else => return err,
+            }
+        };
         defer file.close();
 
         var buffer: [1000]u8 = undefined;
@@ -349,6 +367,7 @@ const Editor = struct {
         while (try file.reader().readUntilDelimiterOrEof(buffer[0..], '\n')) |line| {
             try self.appendRow(line);
         }
+        self.dirty = 0;
     }
 
     fn scroll(self: *Editor) void {
@@ -390,6 +409,7 @@ const Editor = struct {
         if (self.cursor_y == self.rows.items.len) try self.appendRow("");
         try self.rows.items[self.cursor_y].insertChar(self.cursor_row_x, char);
         self.cursor_row_x += 1;
+        self.dirty += 1;
     }
 
     fn rowsToString(self: *Editor) !std.ArrayList(u8) {
@@ -414,6 +434,7 @@ const Editor = struct {
         if (written != buffer.items.len) return error.WriteReturnedNotEqual;
 
         try self.setStatusMessage("{d} bytes written to disk", .{written});
+        self.dirty = 0;
     }
 };
 
@@ -486,7 +507,7 @@ pub fn main() !void {
 
     if (args.len > 1) try editor.open(args[1]);
 
-    while (try editor.processKeypress()) {
+    while (!try editor.processKeypress()) {
         try editor.refreshScreen();
     }
 
