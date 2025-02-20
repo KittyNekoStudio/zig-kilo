@@ -251,7 +251,7 @@ const Editor = struct {
     }
 
     fn moveCursor(self: *Editor, key: u16) void {
-        var row = if (self.cursor_y >= self.rows.items.len) null else self.rows.items[self.cursor_y].row.items;
+        const row = if (self.cursor_y >= self.rows.items.len) null else self.rows.items[self.cursor_y].row.items;
         switch (key) {
             @intFromEnum(Key.MOVE_UP) => if (self.cursor_y != 0) {
                 self.cursor_y -= 1;
@@ -275,8 +275,10 @@ const Editor = struct {
             },
             else => {},
         }
-        row = if (self.cursor_y >= self.rows.items.len) null else self.rows.items[self.cursor_y].render.items;
-        const rowlen = if (row != null) row.?.len else 0;
+        var rowlen: usize = 0;
+        if (self.cursor_y < self.rows.items.len) {
+            rowlen = self.rows.items[self.cursor_y].row.items.len;
+        }
         if (self.cursor_row_x > rowlen) {
             self.cursor_row_x = @intCast(rowlen);
         }
@@ -407,7 +409,11 @@ const Editor = struct {
 
         const file = try std.fs.cwd().openFile(self.file_name.items, .{ .mode = .write_only });
         defer file.close();
-        _ = try file.write(buffer.items);
+
+        const written = try file.write(buffer.items);
+        if (written != buffer.items.len) return error.WriteReturnedNotEqual;
+
+        try self.setStatusMessage("{d} bytes written to disk", .{written});
     }
 };
 
@@ -471,7 +477,7 @@ pub fn main() !void {
     var editor = Editor.init(allocator);
     defer editor.file_name.deinit();
 
-    try editor.setStatusMessage("HELP: Ctrl-Y = quit", .{});
+    try editor.setStatusMessage("HELP: Ctrl-s = save | Ctrl-Y = quit", .{});
 
     try editor.enableRawMode();
 
