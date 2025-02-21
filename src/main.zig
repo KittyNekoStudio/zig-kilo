@@ -81,7 +81,7 @@ const Editor = struct {
     cursor_row_x: u16,
     cursor_render_x: u16,
     cursor_y: u16,
-    file_name: std.ArrayList(u8),
+    filename: std.ArrayList(u8),
     status_message: [1024]u8,
     status_message_time: i64,
     rows: std.ArrayList(Row),
@@ -100,7 +100,7 @@ const Editor = struct {
             .cursor_row_x = 0,
             .cursor_render_x = 0,
             .cursor_y = 0,
-            .file_name = std.ArrayList(u8).init(allocator),
+            .filename = std.ArrayList(u8).init(allocator),
             .status_message = undefined,
             .status_message_time = 0,
             .rows = std.ArrayList(Row).init(allocator),
@@ -244,7 +244,7 @@ const Editor = struct {
     fn drawStatusBar(self: Editor, writer: anytype) !void {
         try writer.writeAll("\x1b[7m");
 
-        var status = try std.fmt.allocPrint(self.allocator, "{s} - {d} lines {s}", .{ if (self.file_name.items.len == 0) "[No Name]" else self.file_name.items, self.rows.items.len, if (self.dirty != 0) "(modified)" else "" });
+        var status = try std.fmt.allocPrint(self.allocator, "{s} - {d} lines {s}", .{ if (self.filename.items.len == 0) "[No Name]" else self.filename.items, self.rows.items.len, if (self.dirty != 0) "(modified)" else "" });
         defer self.allocator.free(status);
 
         const rstatus = try std.fmt.allocPrint(self.allocator, "{d}", .{self.cursor_y + 1});
@@ -373,7 +373,7 @@ const Editor = struct {
     }
 
     fn open(self: *Editor, filepath: []u8) !void {
-        try self.file_name.appendSlice(filepath);
+        try self.filename.appendSlice(filepath);
 
         // Wow I can actually write zig code
         const file = std.fs.cwd().openFile(filepath, .{ .mode = .read_only }) catch |err| file: {
@@ -386,12 +386,12 @@ const Editor = struct {
         };
         defer file.close();
 
-        var buffer: [1000]u8 = undefined;
+        var buffer: [10000]u8 = undefined;
 
         while (try file.reader().readUntilDelimiterOrEof(buffer[0..], '\n')) |line| {
             try self.insertRow(line, self.rows.items.len);
+            self.dirty = 0;
         }
-        self.dirty = 0;
     }
 
     fn scroll(self: *Editor) void {
@@ -460,12 +460,18 @@ const Editor = struct {
     }
 
     fn save(self: *Editor) !void {
-        if (self.file_name.items.len == 0) return;
+        if (self.filename.items.len == 0) if (try self.promt("Save as: {s} (ESC to cancel)")) |filename| {
+            self.filename.deinit();
+            self.filename = filename;
+        } else {
+            try self.setStatusMessage("Save aborted", .{});
+            return;
+        };
 
         const buffer = try self.rowsToString();
         defer buffer.deinit();
 
-        const file = try std.fs.cwd().createFile(self.file_name.items, .{ .read = false });
+        const file = try std.fs.cwd().createFile(self.filename.items, .{ .read = false });
         defer file.close();
 
         const written = try file.write(buffer.items);
@@ -501,12 +507,39 @@ const Editor = struct {
 
         self.dirty += 1;
     }
+
+    fn promt(self: *Editor, comptime promt_message: []const u8) !?std.ArrayList(u8) {
+        var buffer = std.ArrayList(u8).init(self.allocator);
+
+        while (true) {
+            try self.setStatusMessage(promt_message, .{buffer.items});
+            try self.refreshScreen();
+
+            const c = try editorReadKey();
+            if (c == @intFromEnum(Key.DEL_KEY) or c == ctrlKey('h') or c == @intFromEnum(Key.BACKSPACE)) {
+                if (buffer.items.len != 0) _ = buffer.pop();
+            }
+            else if (c == '\x1b') {
+                try self.setStatusMessage("", .{});
+                buffer.deinit();
+                return null;
+            } else if (c == '\r') {
+                if (buffer.items.len != 0) {
+                    try self.setStatusMessage("", .{});
+                    return buffer;
+                }
+            } else if (!std.ascii.isControl(@intCast(c)) and c < 128) {
+                try buffer.append(@intCast(c));
+            }
+        }
+    }
 };
 
 fn ctrlKey(key: u8) u8 {
     return key & 0x1f;
 }
 
+// TODO! change this to return u8
 fn editorReadKey() !u16 {
     var buffer: u8 = undefined;
 
@@ -561,7 +594,7 @@ pub fn main() !void {
     const allocator = gpa.allocator();
 
     var editor = Editor.init(allocator);
-    defer editor.file_name.deinit();
+    defer editor.filename.deinit();
 
     try editor.setStatusMessage("HELP: Ctrl-s = save | Ctrl-Q = quit", .{});
 
