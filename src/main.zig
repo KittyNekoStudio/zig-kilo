@@ -337,6 +337,7 @@ const Editor = struct {
         }
 
         if (self.dirty > 0 and self.quit_times == 0) quit = true;
+        if (c != ctrlKey('y')) self.quit_times = QUIT_TIMES;
         return quit;
     }
 
