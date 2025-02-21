@@ -56,6 +56,22 @@ const Row = struct {
         try self.row.insert(at_in, char);
         try self.updateRow();
     }
+
+    fn delChar(self: *Row, at: usize) !void {
+        if (at < 0 or at >= self.row.items.len) return;
+        _ = self.row.orderedRemove(at);
+        try self.updateRow();
+    }
+
+    fn freeRow(self: *Row) void {
+        self.row.deinit();
+        self.render.deinit();
+    }
+
+    fn appendString(self: *Row, string: []const u8) !void {
+        try self.row.appendSlice(string);
+        try self.updateRow();
+    }
 };
 
 const Editor = struct {
@@ -298,9 +314,9 @@ const Editor = struct {
 
         if (c == 0) return quit;
         switch (c) {
-            ctrlKey('y') => if (self.dirty != 0) {
+            ctrlKey('q') => if (self.dirty != 0) {
                 self.quit_times -= 1;
-                try self.setStatusMessage("WARNING!!! File has unsaved changes. Press Ctrl-Y {d} more times to quit.", .{self.quit_times});
+                try self.setStatusMessage("WARNING!!! File has unsaved changes. Press Ctrl-Q {d} more times to quit.", .{self.quit_times});
             } else {
                 quit = true;
             },
@@ -325,27 +341,31 @@ const Editor = struct {
             @intFromEnum(Key.END_KEY) => if (self.cursor_y < self.rows.items.len) {
                 self.cursor_row_x = @intCast(self.rows.items[self.cursor_y].row.items.len);
             },
-            ctrlKey('s') => try self.save(),
-            // TODO! implement keys
-            ctrlKey('h') => {},
+            ctrlKey('s') => {
+                try self.save();
+            },
+            ctrlKey('h'), @intFromEnum(Key.BACKSPACE), @intFromEnum(Key.DEL_KEY) => {
+                if (c == @intFromEnum(Key.DEL_KEY)) self.moveCursor(@intFromEnum(Key.MOVE_RIGHT));
+                try self.delChar();
+            },
             ctrlKey('l') => {},
-            '\r' => {},
+            '\r' => try self.insertNewLine(),
             '\x1b' => {},
-            @intFromEnum(Key.BACKSPACE) => {},
-            @intFromEnum(Key.DEL_KEY) => {},
             else => try self.insertChar(@intCast(c)),
         }
 
         if (self.dirty > 0 and self.quit_times == 0) quit = true;
-        if (c != ctrlKey('y')) self.quit_times = QUIT_TIMES;
+        if (c != ctrlKey('q')) self.quit_times = QUIT_TIMES;
         return quit;
     }
 
-    fn appendRow(self: *Editor, line: []u8) !void {
+    fn insertRow(self: *Editor, line: []u8, at: usize) !void {
+        if (at < 0 or at > self.rows.items.len) return;
+
         var row = Row.init(self.allocator);
         try row.row.appendSlice(line);
         try row.updateRow();
-        try self.rows.append(row);
+        try self.rows.insert(at, row);
         self.dirty += 1;
     }
 
@@ -366,7 +386,7 @@ const Editor = struct {
         var buffer: [1000]u8 = undefined;
 
         while (try file.reader().readUntilDelimiterOrEof(buffer[0..], '\n')) |line| {
-            try self.appendRow(line);
+            try self.insertRow(line, self.rows.items.len);
         }
         self.dirty = 0;
     }
@@ -407,10 +427,24 @@ const Editor = struct {
     }
 
     fn insertChar(self: *Editor, char: u8) !void {
-        if (self.cursor_y == self.rows.items.len) try self.appendRow("");
+        if (self.cursor_y == self.rows.items.len) try self.insertRow("", 0);
         try self.rows.items[self.cursor_y].insertChar(self.cursor_row_x, char);
         self.cursor_row_x += 1;
         self.dirty += 1;
+    }
+
+    fn insertNewLine(self: *Editor) !void {
+        if (self.cursor_row_x == 0) {
+            try self.insertRow("", self.cursor_y);
+        } else {
+            var row = &self.rows.items[self.cursor_y];
+            try self.insertRow(row.row.items[self.cursor_row_x..row.row.items.len], self.cursor_y + 1);
+            try row.row.resize(self.cursor_row_x);
+            try row.updateRow();
+        }
+
+        self.cursor_y += 1;
+        self.cursor_row_x = 0;
     }
 
     fn rowsToString(self: *Editor) !std.ArrayList(u8) {
@@ -428,7 +462,7 @@ const Editor = struct {
         const buffer = try self.rowsToString();
         defer buffer.deinit();
 
-        const file = try std.fs.cwd().openFile(self.file_name.items, .{ .mode = .write_only });
+        const file = try std.fs.cwd().createFile(self.file_name.items, .{ .read = false });
         defer file.close();
 
         const written = try file.write(buffer.items);
@@ -436,6 +470,33 @@ const Editor = struct {
 
         try self.setStatusMessage("{d} bytes written to disk", .{written});
         self.dirty = 0;
+    }
+
+    fn delChar(self: *Editor) !void {
+        if (self.cursor_y == self.rows.items.len) return;
+        if (self.cursor_row_x == 0 and self.cursor_y == 0) return;
+
+        var row = &self.rows.items[self.cursor_y];
+        if (self.cursor_row_x > 0) {
+            try row.delChar(self.cursor_row_x - 1);
+            self.cursor_row_x -= 1;
+        } else {
+            self.cursor_row_x = @intCast(self.rows.items[self.cursor_y - 1].row.items.len);
+            try self.rows.items[self.cursor_y - 1].appendString(row.row.items);
+            try self.delRow(self.cursor_y);
+            self.cursor_y -= 1;
+        }
+
+        self.dirty += 1;
+    }
+
+    fn delRow(self: *Editor, at: usize) !void {
+        if (at < 0 or at >= self.rows.items.len) return;
+
+        _ = &self.rows.items[at].freeRow();
+        _ = self.rows.orderedRemove(at);
+
+        self.dirty += 1;
     }
 };
 
@@ -499,7 +560,7 @@ pub fn main() !void {
     var editor = Editor.init(allocator);
     defer editor.file_name.deinit();
 
-    try editor.setStatusMessage("HELP: Ctrl-s = save | Ctrl-Y = quit", .{});
+    try editor.setStatusMessage("HELP: Ctrl-s = save | Ctrl-Q = quit", .{});
 
     try editor.enableRawMode();
 
