@@ -150,9 +150,12 @@ const Editor = struct {
         try posix.tcsetattr(stdin.handle, posix.TCSA.FLUSH, raw);
     }
 
-    pub fn disableRawMode(self: *Editor) !void {
+    pub fn disableRawMode(self: *Editor) void {
         if (self.origin_termios) |origin_termios| {
-            try posix.tcsetattr(stdin.handle, posix.TCSA.FLUSH, origin_termios);
+            posix.tcsetattr(stdin.handle, posix.TCSA.FLUSH, origin_termios) catch {
+                std.debug.print("Failed at tcsetattr in disableRawMode. Restart terminal.\n", .{});
+                return;
+            };
         }
     }
 
@@ -563,6 +566,7 @@ pub fn main() !void {
     try editor.setStatusMessage("HELP: Ctrl-s = save | Ctrl-Q = quit", .{});
 
     try editor.enableRawMode();
+    defer editor.disableRawMode();
 
     const args = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, args);
@@ -574,7 +578,6 @@ pub fn main() !void {
     }
 
     // TODO! handle the other errors or refactor disableRawMode to not return an err so I can defer it
-    try editor.disableRawMode();
     try stdout.writer().writeAll("\x1b[2J");
     try stdout.writer().writeAll("\x1b[H");
 
