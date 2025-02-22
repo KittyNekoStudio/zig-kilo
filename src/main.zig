@@ -85,7 +85,7 @@ const Editor = struct {
     status_message: [1024]u8,
     status_message_time: i64,
     rows: std.ArrayList(Row),
-    dirty: u8,
+    dirty: usize,
     // TODO! are there static variables in zig?
     quit_times: u8,
     row_off: u16,
@@ -317,6 +317,7 @@ const Editor = struct {
 
         if (c == 0) return quit;
         switch (c) {
+            '\r' => try self.insertNewLine(),
             ctrlKey('q') => if (self.dirty != 0) {
                 self.quit_times -= 1;
                 try self.setStatusMessage("WARNING!!! File has unsaved changes. Press Ctrl-Q {d} more times to quit.", .{self.quit_times});
@@ -352,7 +353,6 @@ const Editor = struct {
                 try self.delChar();
             },
             ctrlKey('l') => {},
-            '\r' => try self.insertNewLine(),
             '\x1b' => {},
             else => try self.insertChar(@intCast(c)),
         }
@@ -390,6 +390,7 @@ const Editor = struct {
 
         while (try file.reader().readUntilDelimiterOrEof(buffer[0..], '\n')) |line| {
             try self.insertRow(line, self.rows.items.len);
+            // Overflows if file is to long and assigning dirty to zero is outside of loop
             self.dirty = 0;
         }
     }
@@ -440,10 +441,11 @@ const Editor = struct {
         if (self.cursor_row_x == 0) {
             try self.insertRow("", self.cursor_y);
         } else {
-            var row = &self.rows.items[self.cursor_y];
-            try self.insertRow(row.row.items[self.cursor_row_x..row.row.items.len], self.cursor_y + 1);
-            try row.row.resize(self.cursor_row_x);
-            try row.updateRow();
+            const row = self.rows.items[self.cursor_y];
+            const end = row.row.items.len;
+            try self.insertRow(row.row.items[self.cursor_row_x..end], self.cursor_y + 1);
+            try self.rows.items[self.cursor_y].row.resize(self.cursor_row_x);
+            try self.rows.items[self.cursor_y].updateRow();
         }
 
         self.cursor_y += 1;
