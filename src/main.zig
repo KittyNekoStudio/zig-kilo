@@ -478,7 +478,7 @@ const Editor = struct {
     }
 
     fn save(self: *Editor) !void {
-        if (self.filename.items.len == 0) if (try self.promt("Save as: {s} (ESC to cancel)")) |filename| {
+        if (self.filename.items.len == 0) if (try self.promt("Save as: {s} (ESC to cancel)", null)) |filename| {
             self.filename.deinit();
             self.filename = filename;
         } else {
@@ -526,7 +526,7 @@ const Editor = struct {
         self.dirty += 1;
     }
 
-    fn promt(self: *Editor, comptime promt_message: []const u8) !?std.ArrayList(u8) {
+    fn promt(self: *Editor, comptime promt_message: []const u8, callback: ?*const fn (editor: *Editor, query: []u8, key: u16) void) !?std.ArrayList(u8) {
         var buffer = std.ArrayList(u8).init(self.allocator);
 
         while (true) {
@@ -534,40 +534,83 @@ const Editor = struct {
             try self.refreshScreen();
 
             const c = try editorReadKey();
+
+            // Catches when no input is recived, otherwise cursor goes to top of file
+            if (c == 0) continue;
+
+            // TODO! switch on c instead of else if chain
             if (c == @intFromEnum(Key.DEL_KEY) or c == ctrlKey('h') or c == @intFromEnum(Key.BACKSPACE)) {
                 if (buffer.items.len != 0) _ = buffer.pop();
-            }
-            else if (c == '\x1b') {
+            } else if (c == '\x1b') {
                 try self.setStatusMessage("", .{});
+                if (callback) |callback_inside| callback_inside(self, buffer.items, c);
                 buffer.deinit();
                 return null;
             } else if (c == '\r') {
                 if (buffer.items.len != 0) {
                     try self.setStatusMessage("", .{});
+                    if (callback) |callback_inside| callback_inside(self, buffer.items, c);
                     return buffer;
                 }
-            } else if (!std.ascii.isControl(@intCast(c)) and c < 128) {
+            } else if (!std.ascii.isControl(@truncate(c)) and c < 128) {
                 try buffer.append(@intCast(c));
             }
+            if (callback) |callback_inside| callback_inside(self, buffer.items, c);
         }
     }
 
     fn find(self: *Editor) !void {
-        const query = try self.promt("Search: {s} (ESC to cancel)") orelse return;
-        defer query.deinit();
+        const saved_cursor_y = self.cursor_y;
+        const saved_cursor_row_x = self.cursor_row_x;
+        const saved_col_off = self.col_off;
+        const saved_row_off = self.row_off;
 
-        for (0..self.rows.items.len) |i| {
-            const row = self.rows.items[i];
-            const match = std.mem.indexOf(u8, row.render.items, query.items);
+        const query = try self.promt("Search: {s} (Use ESC/Arrows/Enter)", findCallback) orelse {
+            self.cursor_y = saved_cursor_y;
+            self.cursor_row_x = saved_cursor_row_x;
+            self.col_off = saved_col_off;
+            self.row_off = saved_row_off;
+            return;
+        };
+        defer query.deinit();
+    }
+
+    fn findCallback(self: *Editor, query: []u8, key: u16) void {
+        const state = struct {
+            var last_match: i32 = -1;
+            var direction: i32 = 1;
+        };
+
+        if (key == '\r' or key == '\x1b') {
+            state.last_match = -1;
+            state.direction = 1;
+            return;
+        } else if (key == @intFromEnum(Key.MOVE_UP) or key == @intFromEnum(Key.MOVE_LEFT)) {
+            state.direction = -1;
+        } else if (key == @intFromEnum(Key.MOVE_DOWN) or key == @intFromEnum(Key.MOVE_RIGHT)) {
+            state.direction = 1;
+        } else {
+            state.last_match = -1;
+            state.direction = 1;
+        }
+
+        if (state.last_match == -1) state.direction = 1;
+        var current: i32 = state.last_match;
+
+        for (0..self.rows.items.len) |_| {
+            current += state.direction;
+            if (current == -1) current = @intCast(self.rows.items.len - 1) else if (current == self.rows.items.len) current = 0;
+            const row = self.rows.items[@intCast(current)];
+            const match = std.mem.indexOf(u8, row.render.items, query);
             if (match != null) {
-                self.cursor_y = @intCast(i);
+                state.last_match = current;
+                self.cursor_y = @intCast(current);
                 self.cursor_row_x = self.renderCursorToRowCursor(row.row, match.?);
                 self.row_off = @intCast(self.rows.items.len);
                 break;
             }
         }
     }
-
 };
 
 fn ctrlKey(key: u8) u8 {
