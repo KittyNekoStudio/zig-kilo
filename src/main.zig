@@ -348,6 +348,7 @@ const Editor = struct {
             ctrlKey('s') => {
                 try self.save();
             },
+            ctrlKey('f') => try self.find(),
             ctrlKey('h'), @intFromEnum(Key.BACKSPACE), @intFromEnum(Key.DEL_KEY) => {
                 if (c == @intFromEnum(Key.DEL_KEY)) self.moveCursor(@intFromEnum(Key.MOVE_RIGHT));
                 try self.delChar();
@@ -428,6 +429,20 @@ const Editor = struct {
         }
 
         return render_cursor;
+    }
+
+    fn renderCursorToRowCursor(self: Editor, row: std.ArrayList(u8), rx: usize) u16 {
+        var current_cursor: u16 = 0;
+        _ = self;
+
+        for (0..row.items.len) |cx| {
+            if (row.items[cx] == '\t') current_cursor += (TAB_STOP - 1) - (current_cursor % TAB_STOP);
+            current_cursor += 1;
+
+            if (current_cursor > rx) return @intCast(cx);
+        }
+
+        return current_cursor;
     }
 
     fn insertChar(self: *Editor, char: u8) !void {
@@ -535,6 +550,23 @@ const Editor = struct {
             }
         }
     }
+
+    fn find(self: *Editor) !void {
+        const query = try self.promt("Serch: {s} (ESC to cancel)") orelse return;
+        defer query.deinit();
+
+        for (0..self.rows.items.len) |i| {
+            const row = self.rows.items[i];
+            const match = std.mem.indexOf(u8, row.render.items, query.items);
+            if (match != null) {
+                self.cursor_y = @intCast(i);
+                self.cursor_row_x = self.renderCursorToRowCursor(row.row, match.?);
+                self.row_off = @intCast(self.rows.items.len);
+                break;
+            }
+        }
+    }
+
 };
 
 fn ctrlKey(key: u8) u8 {
@@ -598,7 +630,7 @@ pub fn main() !void {
     var editor = Editor.init(allocator);
     defer editor.filename.deinit();
 
-    try editor.setStatusMessage("HELP: Ctrl-s = save | Ctrl-Q = quit", .{});
+    try editor.setStatusMessage("HELP: Ctrl-s = save | Ctrl-Q = quit | Ctrl-F = find", .{});
 
     try editor.enableRawMode();
     defer editor.disableRawMode();
