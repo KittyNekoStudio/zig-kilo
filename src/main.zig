@@ -431,6 +431,7 @@ const Editor = struct {
         return render_cursor;
     }
 
+    // TODO! make this not a method
     fn renderCursorToRowCursor(self: Editor, row: std.ArrayList(u8), rx: usize) u16 {
         var current_cursor: u16 = 0;
         _ = self;
@@ -552,7 +553,7 @@ const Editor = struct {
     }
 
     fn find(self: *Editor) !void {
-        const query = try self.promt("Serch: {s} (ESC to cancel)") orelse return;
+        const query = try self.promt("Search: {s} (ESC to cancel)") orelse return;
         defer query.deinit();
 
         for (0..self.rows.items.len) |i| {
@@ -630,7 +631,7 @@ pub fn main() !void {
     var editor = Editor.init(allocator);
     defer editor.filename.deinit();
 
-    try editor.setStatusMessage("HELP: Ctrl-s = save | Ctrl-Q = quit | Ctrl-F = find", .{});
+    try editor.setStatusMessage("HELP: Ctrl-s = save | Ctrl-Q = quit | Ctrl-F = search", .{});
 
     try editor.enableRawMode();
     defer editor.disableRawMode();
