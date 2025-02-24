@@ -17,6 +17,12 @@ const Key = enum(u16) {
     PAGE_DOWN,
 };
 
+const Highlight = enum(u8) {
+    NORMAL = 1,
+    NUMBER,
+    MATCH,
+};
+
 const VERSION = "0.0.1";
 const QUIT_TIMES = 3;
 const TAB_STOP = 8;
@@ -24,17 +30,20 @@ const TAB_STOP = 8;
 const Row = struct {
     row: std.ArrayList(u8),
     render: std.ArrayList(u8),
+    highlight: std.ArrayList(Highlight),
 
     pub fn init(allocator: std.mem.Allocator) Row {
         return Row{
             .row = std.ArrayList(u8).init(allocator),
             .render = std.ArrayList(u8).init(allocator),
+            .highlight = std.ArrayList(Highlight).init(allocator),
         };
     }
 
     pub fn deinit(self: Row) void {
         self.row.deinit();
         self.render.deinit();
+        self.highlight.deinit();
     }
 
     fn updateRow(self: *Row) !void {
@@ -48,6 +57,7 @@ const Row = struct {
                 try self.render.append(char);
             }
         }
+        try self.updateSyntax();
     }
 
     fn insertChar(self: *Row, at: usize, char: u8) !void {
@@ -66,11 +76,24 @@ const Row = struct {
     fn freeRow(self: *Row) void {
         self.row.deinit();
         self.render.deinit();
+        self.highlight.deinit();
     }
 
     fn appendString(self: *Row, string: []const u8) !void {
         try self.row.appendSlice(string);
         try self.updateRow();
+    }
+
+    fn updateSyntax(self: *Row) !void {
+        self.highlight.clearAndFree();
+
+        for (0..self.render.items.len) |i| {
+            if (std.ascii.isDigit(self.render.items[i])) {
+                try self.highlight.append(Highlight.NUMBER);
+            } else {
+                try self.highlight.append(Highlight.NORMAL);
+            }
+        }
     }
 };
 
@@ -231,10 +254,29 @@ const Editor = struct {
                 var len: usize = 0;
                 if (self.col_off < self.rows.items[filerow].render.items.len) len = self.rows.items[filerow].render.items.len - self.col_off;
                 if (len > self.screen_cols) len = self.screen_cols;
-
+                const chars = self.rows.items[filerow].render.items;
+                const highlight = self.rows.items[filerow].highlight.items;
+                var current_color: u8 = 0;
                 if (len != 0) {
-                    try writer.writeAll(self.rows.items[filerow].render.items[self.col_off .. self.col_off + len]);
+                    for (0..len) |i| {
+                        if (highlight[i] == Highlight.NORMAL) {
+                            if (current_color != 0) {
+                                try writer.writeAll("\x1b[39m");
+                                current_color = 0;
+                            }
+                        } else {
+                            const color = syntaxToColor(highlight[i]);
+                            if (color != current_color) {
+                                current_color = color;
+                                const string = try std.fmt.allocPrint(self.allocator, "\x1b[{d}m", .{color});
+                                defer self.allocator.free(string);
+                                try writer.writeAll(string);
+                            }
+                        }
+                        try writer.writeByte(chars[i]);
+                    }
                 }
+                try writer.writeAll("\x1b[39m");
             }
             try writer.writeAll("\x1b[K");
             try writer.writeAll("\r\n");
@@ -579,7 +621,15 @@ const Editor = struct {
         const state = struct {
             var last_match: i32 = -1;
             var direction: i32 = 1;
+            var saved_hl_line: i32 = undefined;
+            var saved_hl: std.ArrayList(Highlight) = undefined;
         };
+
+        if (state.saved_hl.items.len != 0) {
+            // TODO! memory leak
+            self.rows.items[@intCast(state.saved_hl_line)].highlight = state.saved_hl;
+            state.saved_hl.clearRetainingCapacity();
+        }
 
         if (key == '\r' or key == '\x1b') {
             state.last_match = -1;
@@ -607,6 +657,16 @@ const Editor = struct {
                 self.cursor_y = @intCast(current);
                 self.cursor_row_x = self.renderCursorToRowCursor(row.row, match.?);
                 self.row_off = @intCast(self.rows.items.len);
+
+                state.saved_hl_line = current;
+                state.saved_hl = row.highlight.clone() catch std.ArrayList(Highlight).init(self.allocator);
+                //@memset(row.highlight.items[match.?..match.? + query.len], Highlight.MATCH);
+                if (state.saved_hl.items.len != 0) {
+                    for (match.?..match.? + query.len) |i| {
+                        row.highlight.items[i] = Highlight.MATCH;
+                    }
+
+                }
                 break;
             }
         }
@@ -664,6 +724,14 @@ fn editorReadKey() !u16 {
         }
     }
     return buffer;
+}
+
+fn syntaxToColor(highlight: Highlight) u8 {
+    switch (highlight) {
+        .NUMBER => return 31,
+        .MATCH => return 34,
+        else => return 37,
+    }
 }
 
 pub fn main() !void {
