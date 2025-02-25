@@ -622,13 +622,13 @@ const Editor = struct {
             var last_match: i32 = -1;
             var direction: i32 = 1;
             var saved_hl_line: i32 = undefined;
-            var saved_hl: std.ArrayList(Highlight) = undefined;
+            var saved_hl: ?[]Highlight = null;
         };
 
-        if (state.saved_hl.items.len != 0) {
-            // TODO! memory leak
-            self.rows.items[@intCast(state.saved_hl_line)].highlight = state.saved_hl;
-            state.saved_hl.clearRetainingCapacity();
+        if (state.saved_hl) |saved_hl| {
+            std.mem.copyForwards(Highlight, self.rows.items[@intCast(state.saved_hl_line)].highlight.items, saved_hl);
+            self.allocator.free(saved_hl);
+            state.saved_hl = null;
         }
 
         if (key == '\r' or key == '\x1b') {
@@ -649,9 +649,16 @@ const Editor = struct {
 
         for (0..self.rows.items.len) |_| {
             current += state.direction;
-            if (current == -1) current = @intCast(self.rows.items.len - 1) else if (current == self.rows.items.len) current = 0;
+
+            if (current == -1) {
+                current = @intCast(self.rows.items.len - 1);
+            } else if (current == self.rows.items.len) {
+                current = 0;
+            }
+
             const row = self.rows.items[@intCast(current)];
             const match = std.mem.indexOf(u8, row.render.items, query);
+
             if (match != null) {
                 state.last_match = current;
                 self.cursor_y = @intCast(current);
@@ -659,14 +666,10 @@ const Editor = struct {
                 self.row_off = @intCast(self.rows.items.len);
 
                 state.saved_hl_line = current;
-                state.saved_hl = row.highlight.clone() catch std.ArrayList(Highlight).init(self.allocator);
-                //@memset(row.highlight.items[match.?..match.? + query.len], Highlight.MATCH);
-                if (state.saved_hl.items.len != 0) {
-                    for (match.?..match.? + query.len) |i| {
-                        row.highlight.items[i] = Highlight.MATCH;
-                    }
+                state.saved_hl = self.allocator.alloc(Highlight, row.render.items.len) catch return;
+                std.mem.copyForwards(Highlight, state.saved_hl.?, row.highlight.items);
 
-                }
+                @memset(row.highlight.items[match.? .. match.? + query.len], Highlight.MATCH);
                 break;
             }
         }
@@ -736,7 +739,7 @@ fn syntaxToColor(highlight: Highlight) u8 {
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.detectLeaks();
+    defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
     var editor = Editor.init(allocator);
