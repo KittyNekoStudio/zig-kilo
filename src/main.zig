@@ -38,6 +38,11 @@ const VERSION = "0.0.1";
 const QUIT_TIMES = 3;
 const TAB_STOP = 8;
 const HIGHLIGHT_NUMBERS = 1 << 0;
+const HIGHLIGHT_STRINGS = 1 << 1;
+const HIGHLIGHT_FLAGS = packed struct {
+    number: bool = false,
+    string: bool = false,
+};
 const ZIG_FILE_EXTENSIONS = [_][]const u8{"zig"};
 
 const Key = enum(u16) {
@@ -55,6 +60,7 @@ const Key = enum(u16) {
 
 const Highlight = enum(u8) {
     NORMAL = 1,
+    STRING,
     NUMBER,
     MATCH,
 };
@@ -62,7 +68,7 @@ const Highlight = enum(u8) {
 const Syntax = struct {
     filetype: []const u8,
     filematch: []const []const u8,
-    flags: u32,
+    flags: HIGHLIGHT_FLAGS,
 };
 
 const Row = struct {
@@ -130,12 +136,28 @@ const Row = struct {
         if (editor.syntax == null) return;
 
         var previous_sep = true;
+        var in_string: u8 = 0;
 
         for (0..self.render.items.len) |i| {
             const char = self.render.items[i];
             const previous_highlight = if (i > 0) self.highlight.items[i - 1] else Highlight.NORMAL;
 
-            if (editor.syntax.?.flags > 0 and HIGHLIGHT_NUMBERS > 0) {
+            if (editor.syntax.?.flags.string) {
+                if (in_string > 0) {
+                    self.highlight.items[i] = Highlight.STRING;
+                    if (char == in_string) in_string = 0;
+                    previous_sep = true;
+                    continue;
+                } else {
+                    if (char == '"' or char == '\'') {
+                        in_string = char;
+                        self.highlight.items[i] = Highlight.STRING;
+                        continue;
+                    }
+                }
+            }
+
+            if (editor.syntax.?.flags.number) {
                 if (std.ascii.isDigit(char)) {
                     if ((previous_sep or previous_highlight == Highlight.NUMBER) or (char == '.' and previous_highlight == Highlight.NUMBER)) {
                         self.highlight.items[i] = Highlight.NUMBER;
@@ -737,7 +759,7 @@ const Editor = struct {
     fn updateFileDescriptor(self: *Editor) void {
         if (self.filename.items.len != 0) {
             if (std.mem.endsWith(u8, self.filename.items, ".zig")) {
-                self.syntax = .{ .filetype = "zig", .filematch = &ZIG_FILE_EXTENSIONS, .flags = HIGHLIGHT_NUMBERS };
+                self.syntax = .{ .filetype = "zig", .filematch = &ZIG_FILE_EXTENSIONS, .flags = HIGHLIGHT_FLAGS{ .number = true, .string = true } };
             }
         }
     }
@@ -798,9 +820,10 @@ fn editorReadKey() !u16 {
 
 fn syntaxToColor(highlight: Highlight) u8 {
     switch (highlight) {
+        .STRING => return 35,
         .NUMBER => return 31,
         .MATCH => return 34,
-        else => return 37,
+        .NORMAL => return 37,
     }
 }
 
