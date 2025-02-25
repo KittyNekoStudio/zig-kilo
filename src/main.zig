@@ -34,6 +34,12 @@ pub fn main() !void {
     editor.rows.deinit();
 }
 
+const VERSION = "0.0.1";
+const QUIT_TIMES = 3;
+const TAB_STOP = 8;
+const HIGHLIGHT_NUMBERS = 1 << 0;
+const ZIG_FILE_EXTENSIONS = [_][]const u8{"zig"};
+
 const Key = enum(u16) {
     BACKSPACE = 127,
     MOVE_LEFT = 1000,
@@ -53,9 +59,11 @@ const Highlight = enum(u8) {
     MATCH,
 };
 
-const VERSION = "0.0.1";
-const QUIT_TIMES = 3;
-const TAB_STOP = 8;
+const Syntax = struct {
+    filetype: []const u8,
+    filematch: []const []const u8,
+    flags: u32,
+};
 
 const Row = struct {
     row: std.ArrayList(u8),
@@ -76,7 +84,7 @@ const Row = struct {
         self.highlight.deinit();
     }
 
-    fn updateRow(self: *Row) !void {
+    fn updateRow(self: *Row, editor: Editor) !void {
         self.render.clearAndFree();
         for (self.row.items) |char| {
             if (char == '\t') {
@@ -87,20 +95,20 @@ const Row = struct {
                 try self.render.append(char);
             }
         }
-        try self.updateSyntax();
+        try self.updateSyntax(editor);
     }
 
-    fn insertChar(self: *Row, at: usize, char: u8) !void {
+    fn insertChar(self: *Row, at: usize, char: u8, editor: Editor) !void {
         var at_in = at;
         if (at_in < 0 or at_in > self.row.items.len) at_in = self.row.items.len;
         try self.row.insert(at_in, char);
-        try self.updateRow();
+        try self.updateRow(editor);
     }
 
-    fn delChar(self: *Row, at: usize) !void {
+    fn delChar(self: *Row, at: usize, editor: Editor) !void {
         if (at < 0 or at >= self.row.items.len) return;
         _ = self.row.orderedRemove(at);
-        try self.updateRow();
+        try self.updateRow(editor);
     }
 
     fn freeRow(self: *Row) void {
@@ -109,15 +117,17 @@ const Row = struct {
         self.highlight.deinit();
     }
 
-    fn appendString(self: *Row, string: []const u8) !void {
+    fn appendString(self: *Row, string: []const u8, editor: Editor) !void {
         try self.row.appendSlice(string);
-        try self.updateRow();
+        try self.updateRow(editor);
     }
 
-    fn updateSyntax(self: *Row) !void {
+    fn updateSyntax(self: *Row, editor: Editor) !void {
         self.highlight.clearAndFree();
         try self.highlight.resize(self.render.items.len);
         @memset(self.highlight.items, Highlight.NORMAL);
+
+        if (editor.syntax == null) return;
 
         var previous_sep = true;
 
@@ -125,11 +135,13 @@ const Row = struct {
             const char = self.render.items[i];
             const previous_highlight = if (i > 0) self.highlight.items[i - 1] else Highlight.NORMAL;
 
-            if (std.ascii.isDigit(char)) {
-                if ((previous_sep or previous_highlight == Highlight.NUMBER) or (char == '.' and previous_highlight == Highlight.NUMBER)) {
-                    self.highlight.items[i] = Highlight.NUMBER;
-                    previous_sep = false;
-                    continue;
+            if (editor.syntax.?.flags > 0 and HIGHLIGHT_NUMBERS > 0) {
+                if (std.ascii.isDigit(char)) {
+                    if ((previous_sep or previous_highlight == Highlight.NUMBER) or (char == '.' and previous_highlight == Highlight.NUMBER)) {
+                        self.highlight.items[i] = Highlight.NUMBER;
+                        previous_sep = false;
+                        continue;
+                    }
                 }
             }
 
@@ -155,6 +167,7 @@ const Editor = struct {
     row_off: u16,
     col_off: u16,
     allocator: std.mem.Allocator,
+    syntax: ?Syntax,
 
     pub fn init(allocator: std.mem.Allocator) Editor {
         var editor = Editor{
@@ -173,6 +186,7 @@ const Editor = struct {
             .row_off = 0,
             .col_off = 0,
             .allocator = allocator,
+            .syntax = null,
         };
 
         // TODO! collaps this into Editor.init
@@ -330,7 +344,7 @@ const Editor = struct {
         var status = try std.fmt.allocPrint(self.allocator, "{s} - {d} lines {s}", .{ if (self.filename.items.len == 0) "[No Name]" else self.filename.items, self.rows.items.len, if (self.dirty != 0) "(modified)" else "" });
         defer self.allocator.free(status);
 
-        const rstatus = try std.fmt.allocPrint(self.allocator, "{d}", .{self.cursor_y + 1});
+        const rstatus = try std.fmt.allocPrint(self.allocator, "{s} | {d}/{d} ", .{ if (self.syntax) |syntax| syntax.filetype else "no ft", self.cursor_y + 1, self.rows.items.len });
         defer self.allocator.free(rstatus);
 
         if (status.len > self.screen_cols) status = status[0..self.screen_cols];
@@ -451,7 +465,7 @@ const Editor = struct {
 
         var row = Row.init(self.allocator);
         try row.row.appendSlice(line);
-        try row.updateRow();
+        try row.updateRow(self.*);
         try self.rows.insert(at, row);
         self.dirty += 1;
     }
@@ -471,6 +485,8 @@ const Editor = struct {
         defer file.close();
 
         var buffer: [10000]u8 = undefined;
+
+        self.updateFileDescriptor();
 
         while (try file.reader().readUntilDelimiterOrEof(buffer[0..], '\n')) |line| {
             try self.insertRow(line, self.rows.items.len);
@@ -531,7 +547,7 @@ const Editor = struct {
 
     fn insertChar(self: *Editor, char: u8) !void {
         if (self.cursor_y == self.rows.items.len) try self.insertRow("", 0);
-        try self.rows.items[self.cursor_y].insertChar(self.cursor_row_x, char);
+        try self.rows.items[self.cursor_y].insertChar(self.cursor_row_x, char, self.*);
         self.cursor_row_x += 1;
         self.dirty += 1;
     }
@@ -544,7 +560,7 @@ const Editor = struct {
             const end = row.row.items.len;
             try self.insertRow(row.row.items[self.cursor_row_x..end], self.cursor_y + 1);
             try self.rows.items[self.cursor_y].row.resize(self.cursor_row_x);
-            try self.rows.items[self.cursor_y].updateRow();
+            try self.rows.items[self.cursor_y].updateRow(self.*);
         }
 
         self.cursor_y += 1;
@@ -564,6 +580,8 @@ const Editor = struct {
         if (self.filename.items.len == 0) if (try self.promt("Save as: {s} (ESC to cancel)", null)) |filename| {
             self.filename.deinit();
             self.filename = filename;
+            self.updateFileDescriptor();
+            for (self.rows.items) |*row| try row.updateSyntax(self.*);
         } else {
             try self.setStatusMessage("Save aborted", .{});
             return;
@@ -588,11 +606,11 @@ const Editor = struct {
 
         var row = &self.rows.items[self.cursor_y];
         if (self.cursor_row_x > 0) {
-            try row.delChar(self.cursor_row_x - 1);
+            try row.delChar(self.cursor_row_x - 1, self.*);
             self.cursor_row_x -= 1;
         } else {
             self.cursor_row_x = @intCast(self.rows.items[self.cursor_y - 1].row.items.len);
-            try self.rows.items[self.cursor_y - 1].appendString(row.row.items);
+            try self.rows.items[self.cursor_y - 1].appendString(row.row.items, self.*);
             try self.delRow(self.cursor_y);
             self.cursor_y -= 1;
         }
@@ -712,6 +730,14 @@ const Editor = struct {
 
                 @memset(row.highlight.items[match.? .. match.? + query.len], Highlight.MATCH);
                 break;
+            }
+        }
+    }
+
+    fn updateFileDescriptor(self: *Editor) void {
+        if (self.filename.items.len != 0) {
+            if (std.mem.endsWith(u8, self.filename.items, ".zig")) {
+                self.syntax = .{ .filetype = "zig", .filematch = &ZIG_FILE_EXTENSIONS, .flags = HIGHLIGHT_NUMBERS };
             }
         }
     }
