@@ -217,7 +217,6 @@ const Editor = struct {
         try writer.writeAll("\x1b[?25l");
         try writer.writeAll("\x1b[H");
 
-        // TODO! horizontal scrolling is messed up
         try self.drawRows(writer);
         try self.drawStatusBar(writer);
         try self.drawMessageBar(writer);
@@ -270,7 +269,7 @@ const Editor = struct {
                 const highlight = self.rows.items[filerow].highlight.items;
                 var current_color: u8 = 0;
                 if (len != 0) {
-                    for (0..len) |i| {
+                    for (self.col_off..self.col_off + len) |i| {
                         if (highlight[i] == Highlight.NORMAL) {
                             if (current_color != 0) {
                                 try writer.writeAll("\x1b[39m");
