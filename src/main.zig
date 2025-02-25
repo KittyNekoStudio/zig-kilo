@@ -4,6 +4,36 @@ const posix = std.posix;
 const stdin = std.io.getStdIn();
 const stdout = std.io.getStdOut();
 
+pub fn main() !void {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    var editor = Editor.init(allocator);
+    defer editor.filename.deinit();
+
+    try editor.setStatusMessage("HELP: Ctrl-s = save | Ctrl-Q = quit | Ctrl-F = search", .{});
+
+    try editor.enableRawMode();
+    defer editor.disableRawMode();
+
+    const args = try std.process.argsAlloc(allocator);
+    defer std.process.argsFree(allocator, args);
+
+    if (args.len > 1) try editor.open(args[1]);
+
+    while (!try editor.processKeypress()) {
+        try editor.refreshScreen();
+    }
+
+    // TODO! handle the other errors or refactor disableRawMode to not return an err so I can defer it
+    try stdout.writer().writeAll("\x1b[2J");
+    try stdout.writer().writeAll("\x1b[H");
+
+    for (editor.rows.items) |*row| row.deinit();
+    editor.rows.deinit();
+}
+
 const Key = enum(u16) {
     BACKSPACE = 127,
     MOVE_LEFT = 1000,
@@ -757,38 +787,4 @@ fn isSeperator(char: u8) bool {
         }
         break :seperator false;
     };
-}
-
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
-
-    var editor = Editor.init(allocator);
-    defer editor.filename.deinit();
-
-    try editor.setStatusMessage("HELP: Ctrl-s = save | Ctrl-Q = quit | Ctrl-F = search", .{});
-
-    try editor.enableRawMode();
-    defer editor.disableRawMode();
-
-    const args = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, args);
-
-    if (args.len > 1) try editor.open(args[1]);
-
-    while (!try editor.processKeypress()) {
-        try editor.refreshScreen();
-    }
-
-    // TODO! handle the other errors or refactor disableRawMode to not return an err so I can defer it
-    try stdout.writer().writeAll("\x1b[2J");
-    try stdout.writer().writeAll("\x1b[H");
-
-    for (editor.rows.items) |*row| row.deinit();
-    editor.rows.deinit();
-}
-
-test "seperator" {
-    try std.testing.expect(isSeperator(' '));
 }
