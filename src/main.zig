@@ -568,7 +568,7 @@ const Editor = struct {
         self.dirty += 1;
     }
 
-    fn promt(self: *Editor, comptime promt_message: []const u8, callback: ?*const fn (editor: *Editor, query: []u8, key: u16) void) !?std.ArrayList(u8) {
+    fn promt(self: *Editor, comptime promt_message: []const u8, callback: ?*const fn (editor: *Editor, query: []u8, key: u16) std.mem.Allocator.Error!void) !?std.ArrayList(u8) {
         var buffer = std.ArrayList(u8).init(self.allocator);
 
         while (true) {
@@ -585,19 +585,19 @@ const Editor = struct {
                 if (buffer.items.len != 0) _ = buffer.pop();
             } else if (c == '\x1b') {
                 try self.setStatusMessage("", .{});
-                if (callback) |callback_inside| callback_inside(self, buffer.items, c);
+                if (callback) |callback_inside| try callback_inside(self, buffer.items, c);
                 buffer.deinit();
                 return null;
             } else if (c == '\r') {
                 if (buffer.items.len != 0) {
                     try self.setStatusMessage("", .{});
-                    if (callback) |callback_inside| callback_inside(self, buffer.items, c);
+                    if (callback) |callback_inside| try callback_inside(self, buffer.items, c);
                     return buffer;
                 }
             } else if (!std.ascii.isControl(@truncate(c)) and c < 128) {
                 try buffer.append(@intCast(c));
             }
-            if (callback) |callback_inside| callback_inside(self, buffer.items, c);
+            if (callback) |callback_inside| try callback_inside(self, buffer.items, c);
         }
     }
 
@@ -617,7 +617,7 @@ const Editor = struct {
         defer query.deinit();
     }
 
-    fn findCallback(self: *Editor, query: []u8, key: u16) void {
+    fn findCallback(self: *Editor, query: []u8, key: u16) std.mem.Allocator.Error!void {
         const state = struct {
             var last_match: i32 = -1;
             var direction: i32 = 1;
@@ -666,7 +666,8 @@ const Editor = struct {
                 self.row_off = @intCast(self.rows.items.len);
 
                 state.saved_hl_line = current;
-                state.saved_hl = self.allocator.alloc(Highlight, row.render.items.len) catch return;
+                // TODO! handle this error
+                state.saved_hl = try self.allocator.alloc(Highlight, row.render.items.len);
                 std.mem.copyForwards(Highlight, state.saved_hl.?, row.highlight.items);
 
                 @memset(row.highlight.items[match.? .. match.? + query.len], Highlight.MATCH);
