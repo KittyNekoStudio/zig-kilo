@@ -666,7 +666,6 @@ const Editor = struct {
                 self.row_off = @intCast(self.rows.items.len);
 
                 state.saved_hl_line = current;
-                // TODO! handle this error
                 state.saved_hl = try self.allocator.alloc(Highlight, row.render.items.len);
                 std.mem.copyForwards(Highlight, state.saved_hl.?, row.highlight.items);
 
@@ -736,6 +735,17 @@ fn syntaxToColor(highlight: Highlight) u8 {
         .MATCH => return 34,
         else => return 37,
     }
+}
+
+fn isSeperator(char: u8) bool {
+    const seperators = ",.()+-/*=~%<>[];";
+    //const seperators = [15]u8{',', '.', '(', ')', '+', '-', '*', '=', '~', '%', '<', '>', '[', ']', ';'};
+    return std.ascii.isWhitespace(char) or seperator: {
+        for (seperators) |seperator| {
+            if (char == seperator) break :seperator true;
+        }
+        break :seperator false;
+    };
 }
 
 pub fn main() !void {
