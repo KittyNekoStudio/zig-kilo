@@ -86,13 +86,24 @@ const Row = struct {
 
     fn updateSyntax(self: *Row) !void {
         self.highlight.clearAndFree();
+        try self.highlight.resize(self.render.items.len);
+        @memset(self.highlight.items, Highlight.NORMAL);
+
+        var previous_sep = true;
 
         for (0..self.render.items.len) |i| {
-            if (std.ascii.isDigit(self.render.items[i])) {
-                try self.highlight.append(Highlight.NUMBER);
-            } else {
-                try self.highlight.append(Highlight.NORMAL);
+            const char = self.render.items[i];
+            const previous_highlight = if (i > 0) self.highlight.items[i - 1] else Highlight.NORMAL;
+
+            if (std.ascii.isDigit(char)) {
+                if ((previous_sep or previous_highlight == Highlight.NUMBER) or (char == '.' and previous_highlight == Highlight.NUMBER)) {
+                    self.highlight.items[i] = Highlight.NUMBER;
+                    previous_sep = false;
+                    continue;
+                }
             }
+
+            previous_sep = isSeperator(char);
         }
     }
 };
@@ -206,6 +217,7 @@ const Editor = struct {
         try writer.writeAll("\x1b[?25l");
         try writer.writeAll("\x1b[H");
 
+        // TODO! horizontal scrolling is messed up
         try self.drawRows(writer);
         try self.drawStatusBar(writer);
         try self.drawMessageBar(writer);
@@ -776,4 +788,8 @@ pub fn main() !void {
 
     for (editor.rows.items) |*row| row.deinit();
     editor.rows.deinit();
+}
+
+test "seperator" {
+    try std.testing.expect(isSeperator(' '));
 }
