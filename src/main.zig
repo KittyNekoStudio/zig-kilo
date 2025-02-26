@@ -135,8 +135,7 @@ const Row = struct {
 
     fn updateSyntax(self: *Row, editor: Editor) !void {
         self.highlight.clearAndFree();
-        try self.highlight.resize(self.render.items.len);
-        @memset(self.highlight.items, Highlight.NORMAL);
+        try self.highlight.appendNTimes(Highlight.NORMAL, self.render.items.len);
 
         if (editor.syntax == null) return;
 
@@ -147,7 +146,7 @@ const Row = struct {
         var in_string: u8 = 0;
 
         var i: usize = 0;
-        while (i < self.render.items.len) : (i += 1) {
+        while (i < self.render.items.len) {
             const char = self.render.items[i];
             const previous_highlight = if (i > 0) self.highlight.items[i - 1] else Highlight.NORMAL;
 
@@ -163,16 +162,18 @@ const Row = struct {
                     self.highlight.items[i] = Highlight.STRING;
                     if (char == '\\' and i + 1 < self.render.items.len) {
                         self.highlight.items[i + 1] = Highlight.STRING;
-                        i += 1;
+                        i += 2;
                         continue;
                     }
                     if (char == in_string) in_string = 0;
                     previous_sep = true;
+                    i += 1;
                     continue;
                 } else {
                     if (char == '"' or char == '\'') {
                         in_string = char;
                         self.highlight.items[i] = Highlight.STRING;
+                        i += 1;
                         continue;
                     }
                 }
@@ -183,6 +184,7 @@ const Row = struct {
                     if ((previous_sep or previous_highlight == Highlight.NUMBER) or (char == '.' and previous_highlight == Highlight.NUMBER)) {
                         self.highlight.items[i] = Highlight.NUMBER;
                         previous_sep = false;
+                        i += 1;
                         continue;
                     }
                 }
@@ -211,6 +213,7 @@ const Row = struct {
             }
 
             previous_sep = isSeperator(char);
+            i += 1;
         }
     }
 };
@@ -805,7 +808,7 @@ const Editor = struct {
                 self.syntax = .{ .filetype = "zig", .filematch = &ZIG_FILE_EXTENSIONS, .single_line_comment_start = "//", .keywords = &.{
                     "fn",    "if",    "else",  "break",  "while", "for",   "switch", "return", "var",  "const", "enum",   "error", "struct",
                     "union", "catch", "defer", "try",    "pub",   "u8|",   "u16|",   "u32|",   "u64|", "u128|", "usize|", "i8|",   "i16|",
-                    "i32|",  "i64|",  "i128|", "isize|", "bool|", "void|", "f8|",    "f16|",   "f32|", "f64|",  "f128|",  "null|",
+                    "i32|",  "i64|",  "i128|", "isize|", "bool|", "void|", "!void|", "f8|",    "f16|", "f32|",  "f64|",   "f128|", "null|",
                 }, .flags = HIGHLIGHT_FLAGS{ .number = true, .string = true } };
             }
         }
