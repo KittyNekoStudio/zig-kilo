@@ -60,6 +60,9 @@ const Key = enum(u16) {
 
 const Highlight = enum(u8) {
     NORMAL = 1,
+    COMMENT,
+    KEYWORD1,
+    KEYWORD2,
     STRING,
     NUMBER,
     MATCH,
@@ -68,6 +71,8 @@ const Highlight = enum(u8) {
 const Syntax = struct {
     filetype: []const u8,
     filematch: []const []const u8,
+    single_line_comment_start: []const u8,
+    keywords: []const []const u8,
     flags: HIGHLIGHT_FLAGS,
 };
 
@@ -135,16 +140,32 @@ const Row = struct {
 
         if (editor.syntax == null) return;
 
+        const keywords = editor.syntax.?.keywords;
+        const scs = editor.syntax.?.single_line_comment_start;
+
         var previous_sep = true;
         var in_string: u8 = 0;
 
-        for (0..self.render.items.len) |i| {
+        var i: usize = 0;
+        while (i < self.render.items.len) : (i += 1) {
             const char = self.render.items[i];
             const previous_highlight = if (i > 0) self.highlight.items[i - 1] else Highlight.NORMAL;
+
+            if (scs.len > 0 and in_string == 0 and self.render.items.len > i + scs.len) {
+                if (std.mem.eql(u8, self.render.items[i .. i + scs.len], scs)) {
+                    @memset(self.highlight.items[i..self.render.items.len], Highlight.COMMENT);
+                    break;
+                }
+            }
 
             if (editor.syntax.?.flags.string) {
                 if (in_string > 0) {
                     self.highlight.items[i] = Highlight.STRING;
+                    if (char == '\\' and i + 1 < self.render.items.len) {
+                        self.highlight.items[i + 1] = Highlight.STRING;
+                        i += 1;
+                        continue;
+                    }
                     if (char == in_string) in_string = 0;
                     previous_sep = true;
                     continue;
@@ -164,6 +185,28 @@ const Row = struct {
                         previous_sep = false;
                         continue;
                     }
+                }
+            }
+
+            if (previous_sep) {
+                var x: usize = 0;
+                while (x < keywords.len) : (x += 1) {
+                    const keyword = keywords[x];
+                    var keyword_len = keyword.len;
+
+                    const is_keyword2 = keyword[keyword_len - 1] == '|';
+                    if (is_keyword2) keyword_len -= 1;
+
+                    // TODO! there is something wrong with the sperator before the keyword
+                    if (i + keyword_len < self.render.items.len and std.mem.eql(u8, self.render.items[i .. i + keyword_len], keyword[0..keyword_len]) and isSeperator(self.render.items[i + keyword_len])) {
+                        @memset(self.highlight.items[i .. i + keyword_len], if (is_keyword2) Highlight.KEYWORD2 else Highlight.KEYWORD1);
+                        i += keyword_len;
+                        break;
+                    }
+                }
+                if (x != keywords.len - 1) {
+                    previous_sep = false;
+                    continue;
                 }
             }
 
@@ -759,7 +802,11 @@ const Editor = struct {
     fn updateFileDescriptor(self: *Editor) void {
         if (self.filename.items.len != 0) {
             if (std.mem.endsWith(u8, self.filename.items, ".zig")) {
-                self.syntax = .{ .filetype = "zig", .filematch = &ZIG_FILE_EXTENSIONS, .flags = HIGHLIGHT_FLAGS{ .number = true, .string = true } };
+                self.syntax = .{ .filetype = "zig", .filematch = &ZIG_FILE_EXTENSIONS, .single_line_comment_start = "//", .keywords = &.{
+                    "fn",    "if",    "else",  "break",  "while", "for",   "switch", "return", "var",  "const", "enum",   "error", "struct",
+                    "union", "catch", "defer", "try",    "pub",   "u8|",   "u16|",   "u32|",   "u64|", "u128|", "usize|", "i8|",   "i16|",
+                    "i32|",  "i64|",  "i128|", "isize|", "bool|", "void|", "f8|",    "f16|",   "f32|", "f64|",  "f128|",  "null|",
+                }, .flags = HIGHLIGHT_FLAGS{ .number = true, .string = true } };
             }
         }
     }
@@ -820,8 +867,11 @@ fn editorReadKey() !u16 {
 
 fn syntaxToColor(highlight: Highlight) u8 {
     switch (highlight) {
+        .COMMENT => return 36,
+        .KEYWORD1 => return 31,
+        .KEYWORD2 => return 33,
         .STRING => return 35,
-        .NUMBER => return 31,
+        .NUMBER => return 32,
         .MATCH => return 34,
         .NORMAL => return 37,
     }
