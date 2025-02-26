@@ -61,6 +61,7 @@ const Key = enum(u16) {
 const Highlight = enum(u8) {
     NORMAL = 1,
     COMMENT,
+    MULTILINE_COMMENT,
     KEYWORD1,
     KEYWORD2,
     STRING,
@@ -72,6 +73,8 @@ const Syntax = struct {
     filetype: []const u8,
     filematch: []const []const u8,
     single_line_comment_start: []const u8,
+    multiline_comment_start: []const u8,
+    multiline_comment_end: []const u8,
     keywords: []const []const u8,
     flags: HIGHLIGHT_FLAGS,
 };
@@ -141,19 +144,48 @@ const Row = struct {
 
         const keywords = editor.syntax.?.keywords;
         const scs = editor.syntax.?.single_line_comment_start;
+        const mcs = editor.syntax.?.multiline_comment_start;
+        const mce = editor.syntax.?.multiline_comment_end;
 
         var previous_sep = true;
         var in_string: u8 = 0;
+        var in_comment = false;
 
         var i: usize = 0;
         while (i < self.render.items.len) {
             const char = self.render.items[i];
             const previous_highlight = if (i > 0) self.highlight.items[i - 1] else Highlight.NORMAL;
 
-            if (scs.len > 0 and in_string == 0 and self.render.items.len > i + scs.len) {
+            if (scs.len > 0 and in_string == 0 and !in_comment and self.render.items.len > i + scs.len) {
                 if (std.mem.eql(u8, self.render.items[i .. i + scs.len], scs)) {
                     @memset(self.highlight.items[i..self.render.items.len], Highlight.COMMENT);
                     break;
+                }
+            }
+
+            if (mcs.len > 0 and mce.len > 0 and in_string == 0) {
+                if (in_comment) {
+                    self.highlight.items[i] = Highlight.MULTILINE_COMMENT;
+                    if (i + mce.len <= self.render.items.len) {
+                        if (std.mem.eql(u8, self.render.items[i .. i + mce.len], mce)) {
+                            @memset(self.highlight.items[i .. i + mce.len], Highlight.MULTILINE_COMMENT);
+                            i += mce.len;
+                            in_comment = false;
+                            previous_sep = true;
+                            continue;
+                        } else {
+                            i += 1;
+                            continue;
+                        }
+                    }
+                } else if (i + mcs.len <= self.render.items.len) {
+                    if (std.mem.eql(u8, self.render.items[i .. i + mcs.len], mcs)) {
+                        @memset(self.highlight.items[i .. i + mcs.len], Highlight.MULTILINE_COMMENT);
+                        i += mcs.len;
+                        in_comment = true;
+                        previous_sep = true;
+                        continue;
+                    }
                 }
             }
 
@@ -382,7 +414,17 @@ const Editor = struct {
                 var current_color: u8 = 0;
                 if (len != 0) {
                     for (self.col_off..self.col_off + len) |i| {
-                        if (highlight[i] == Highlight.NORMAL) {
+                        if (std.ascii.isControl(chars[i])) {
+                            const sym = if (chars[i] <= 26) '@' + chars[i] else '?';
+                            try writer.writeAll("\x1b[7m");
+                            try writer.writeByte(sym);
+                            try writer.writeAll("\x1b[m");
+                            if (current_color != 0) {
+                                const string = try std.fmt.allocPrint(self.allocator, "\x1b[{d}m", .{current_color});
+                                defer self.allocator.free(string);
+                                try writer.writeAll(string);
+                            }
+                        } else if (highlight[i] == Highlight.NORMAL) {
                             if (current_color != 0) {
                                 try writer.writeAll("\x1b[39m");
                                 current_color = 0;
@@ -552,7 +594,7 @@ const Editor = struct {
         };
         defer file.close();
 
-        var buffer: [10000]u8 = undefined;
+        var buffer: [1000]u8 = undefined;
 
         self.updateFileDescriptor();
 
@@ -809,7 +851,9 @@ const Editor = struct {
                     "fn",    "if",    "else",  "break",  "while", "for",   "switch", "return", "var",  "const", "enum",   "error", "struct",
                     "union", "catch", "defer", "try",    "pub",   "u8|",   "u16|",   "u32|",   "u64|", "u128|", "usize|", "i8|",   "i16|",
                     "i32|",  "i64|",  "i128|", "isize|", "bool|", "void|", "!void|", "f8|",    "f16|", "f32|",  "f64|",   "f128|", "null|",
-                }, .flags = HIGHLIGHT_FLAGS{ .number = true, .string = true } };
+                }, .flags = HIGHLIGHT_FLAGS{ .number = true, .string = true }, 
+                    // TODO! temp for testing multiline comments
+                    .multiline_comment_start = "/*", .multiline_comment_end = "*/" };
             }
         }
     }
@@ -870,7 +914,7 @@ fn editorReadKey() !u16 {
 
 fn syntaxToColor(highlight: Highlight) u8 {
     switch (highlight) {
-        .COMMENT => return 36,
+        .COMMENT, .MULTILINE_COMMENT => return 36,
         .KEYWORD1 => return 31,
         .KEYWORD2 => return 33,
         .STRING => return 35,
