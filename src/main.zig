@@ -29,7 +29,6 @@ pub fn main() !void {
     // TODO! handle the other errors or refactor disableRawMode to not return an err so I can defer it
     try stdout.writer().writeAll("\x1b[2J");
     try stdout.writer().writeAll("\x1b[H");
-
     for (editor.rows.items) |*row| row.deinit();
     editor.rows.deinit();
 }
@@ -80,15 +79,19 @@ const Syntax = struct {
 };
 
 const Row = struct {
+    index: usize,
     row: std.ArrayList(u8),
     render: std.ArrayList(u8),
     highlight: std.ArrayList(Highlight),
+    highlight_open_comment: bool,
 
-    pub fn init(allocator: std.mem.Allocator) Row {
+    pub fn init(allocator: std.mem.Allocator, at: usize) Row {
         return Row{
+            .index = at,
             .row = std.ArrayList(u8).init(allocator),
             .render = std.ArrayList(u8).init(allocator),
             .highlight = std.ArrayList(Highlight).init(allocator),
+            .highlight_open_comment = false,
         };
     }
 
@@ -149,7 +152,7 @@ const Row = struct {
 
         var previous_sep = true;
         var in_string: u8 = 0;
-        var in_comment = false;
+        var in_comment = self.index > 0 and editor.rows.items[self.index - 1].highlight_open_comment;
 
         var i: usize = 0;
         while (i < self.render.items.len) {
@@ -247,6 +250,10 @@ const Row = struct {
             previous_sep = isSeperator(char);
             i += 1;
         }
+
+        const changed = self.highlight_open_comment != in_comment;
+        self.highlight_open_comment = in_comment;
+        if (changed and (self.index + 1) < editor.rows.items.len) try editor.rows.items[self.index + 1].updateSyntax(editor);
     }
 };
 
@@ -573,10 +580,16 @@ const Editor = struct {
     fn insertRow(self: *Editor, line: []u8, at: usize) !void {
         if (at < 0 or at > self.rows.items.len) return;
 
-        var row = Row.init(self.allocator);
+        var row = Row.init(self.allocator, at);
+
         try row.row.appendSlice(line);
+
         try row.updateRow(self.*);
+
         try self.rows.insert(at, row);
+
+        for (self.rows.items[at + 1 .. self.rows.items.len]) |*currentRow| currentRow.index += 1;
+
         self.dirty += 1;
     }
 
@@ -598,6 +611,7 @@ const Editor = struct {
 
         self.updateFileDescriptor();
 
+        // TODO! might be better to chanage to this `file.readToEndAlloc()`
         while (try file.reader().readUntilDelimiterOrEof(buffer[0..], '\n')) |line| {
             try self.insertRow(line, self.rows.items.len);
             // Overflows if file is to long and assigning dirty to zero is outside of loop
@@ -733,6 +747,7 @@ const Editor = struct {
 
         _ = &self.rows.items[at].freeRow();
         _ = self.rows.orderedRemove(at);
+        for (self.rows.items[at..self.rows.items.len]) |*currentRow| currentRow.index -= 1;
 
         self.dirty += 1;
     }
@@ -847,13 +862,21 @@ const Editor = struct {
     fn updateFileDescriptor(self: *Editor) void {
         if (self.filename.items.len != 0) {
             if (std.mem.endsWith(u8, self.filename.items, ".zig")) {
-                self.syntax = .{ .filetype = "zig", .filematch = &ZIG_FILE_EXTENSIONS, .single_line_comment_start = "//", .keywords = &.{
-                    "fn",    "if",    "else",  "break",  "while", "for",   "switch", "return", "var",  "const", "enum",   "error", "struct",
-                    "union", "catch", "defer", "try",    "pub",   "u8|",   "u16|",   "u32|",   "u64|", "u128|", "usize|", "i8|",   "i16|",
-                    "i32|",  "i64|",  "i128|", "isize|", "bool|", "void|", "!void|", "f8|",    "f16|", "f32|",  "f64|",   "f128|", "null|",
-                }, .flags = HIGHLIGHT_FLAGS{ .number = true, .string = true }, 
+                self.syntax = .{
+                    .filetype = "zig",
+                    .filematch = &ZIG_FILE_EXTENSIONS,
+                    .single_line_comment_start = "//",
+                    .keywords = &.{
+                        "fn",    "if",     "else",  "break",  "while", "for",   "switch", "return", "var",  "const", "enum",   "error", "struct",
+                        "union", "catch",  "defer", "try",    "pub",   "u8|",   "u16|",   "u32|",   "u64|", "u128|", "usize|", "i8|",   "i16|",
+                        "i32|",  "i64|",   "i128|", "isize|", "bool|", "void|", "!void|", "f8|",    "f16|", "f32|",  "f64|",   "f128|", "null|",
+                        "true|", "false|",
+                    },
+                    .flags = HIGHLIGHT_FLAGS{ .number = true, .string = true },
                     // TODO! temp for testing multiline comments
-                    .multiline_comment_start = "/*", .multiline_comment_end = "*/" };
+                    .multiline_comment_start = "/*",
+                    .multiline_comment_end = "*/",
+                };
             }
         }
     }
