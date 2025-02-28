@@ -375,7 +375,6 @@ const Editor = struct {
         try self.drawStatusBar(writer);
         try self.drawMessageBar(writer);
 
-        // TODO! find a better way to format strings.
         const move_cursor = try std.fmt.allocPrint(self.allocator, "\x1b[{d};{d}H", .{ (self.cursor_y - self.row_off) + 1, (self.cursor_render_x - self.col_off) + 1 });
         defer self.allocator.free(move_cursor);
         try writer.writeAll(move_cursor);
@@ -386,7 +385,6 @@ const Editor = struct {
     }
 
     fn setStatusMessage(self: *Editor, comptime fmt: []const u8, args: anytype) !void {
-        // TODO! find a better way to clear buffer. Switch to ArrayList?
         @memset(&self.status_message, 0);
         _ = try std.fmt.bufPrint(&self.status_message, fmt, args);
         self.status_message_time = std.time.timestamp();
@@ -610,11 +608,10 @@ const Editor = struct {
         };
         defer file.close();
 
-        var buffer: [1000]u8 = undefined;
+        var buffer: [1 << 20]u8 = undefined;
 
         self.updateFileDescriptor();
 
-        // TODO! might be better to chanage to this `file.readToEndAlloc()`
         while (try file.reader().readUntilDelimiterOrEof(buffer[0..], '\n')) |line| {
             try self.insertRow(line, self.rows.items.len);
             // Overflows if file is to long and assigning dirty to zero is outside of loop
@@ -655,21 +652,6 @@ const Editor = struct {
         }
 
         return render_cursor;
-    }
-
-    // TODO! make this not a method
-    fn renderCursorToRowCursor(self: Editor, row: std.ArrayList(u8), rx: usize) u16 {
-        var current_cursor: u16 = 0;
-        _ = self;
-
-        for (0..row.items.len) |cx| {
-            if (row.items[cx] == '\t') current_cursor += (TAB_STOP - 1) - (current_cursor % TAB_STOP);
-            current_cursor += 1;
-
-            if (current_cursor > rx) return @intCast(cx);
-        }
-
-        return current_cursor;
     }
 
     fn insertChar(self: *Editor, char: u8) !void {
@@ -764,25 +746,27 @@ const Editor = struct {
 
             const c = try editorReadKey();
 
-            // Catches when no input is recived, otherwise cursor goes to top of file
-            if (c == 0) continue;
-
-            // TODO! switch on c instead of else if chain
-            if (c == @intFromEnum(Key.DEL_KEY) or c == ctrlKey('h') or c == @intFromEnum(Key.BACKSPACE)) {
-                if (buffer.items.len != 0) _ = buffer.pop();
-            } else if (c == '\x1b') {
-                try self.setStatusMessage("", .{});
-                if (callback) |callback_inside| try callback_inside(self, buffer.items, c);
-                buffer.deinit();
-                return null;
-            } else if (c == '\r') {
-                if (buffer.items.len != 0) {
+            switch (c) {
+                0 => continue,
+                @intFromEnum(Key.DEL_KEY), ctrlKey('h'), @intFromEnum(Key.BACKSPACE) => if (buffer.items.len != 0) {
+                    _ = buffer.pop();
+                },
+                '\x1b' => {
+                    try self.setStatusMessage("", .{});
+                    if (callback) |callback_inside| try callback_inside(self, buffer.items, c);
+                    buffer.deinit();
+                    return null;
+                },
+                '\r' => {
                     try self.setStatusMessage("", .{});
                     if (callback) |callback_inside| try callback_inside(self, buffer.items, c);
                     return buffer;
-                }
-            } else if (!std.ascii.isControl(@truncate(c)) and c < 128) {
-                try buffer.append(@intCast(c));
+                },
+                else => {
+                    if (!std.ascii.isControl(@truncate(c)) and c < 128) {
+                        try buffer.append(@intCast(c));
+                    }
+                },
             }
             if (callback) |callback_inside| try callback_inside(self, buffer.items, c);
         }
@@ -849,7 +833,7 @@ const Editor = struct {
             if (match != null) {
                 state.last_match = current;
                 self.cursor_y = @intCast(current);
-                self.cursor_row_x = self.renderCursorToRowCursor(row.row, match.?);
+                self.cursor_row_x = renderCursorToRowCursor(row.row, match.?);
                 self.row_off = @intCast(self.rows.items.len);
 
                 state.saved_hl_line = current;
@@ -870,13 +854,13 @@ const Editor = struct {
                     .filematch = &ZIG_FILE_EXTENSIONS,
                     .single_line_comment_start = "//",
                     .keywords = &.{
-                        "fn",    "if",     "else",       "break",  "while", "for",   "switch", "return", "var",  "const", "enum",   "error", "struct",
-                        "union", "catch",  "defer",      "try",    "pub",   "u8|",   "u16|",   "u32|",   "u64|", "u128|", "usize|", "i8|",   "i16|",
-                        "i32|",  "i64|",   "i128|",      "isize|", "bool|", "void|", "!void|", "f8|",    "f16|", "f32|",  "f64|",   "f128|", "null|",
-                        "true|", "false|", "undefined|",
+                        "fn",    "if",    "else",   "break",      "while",  "for",     "switch", "return", "var",  "const", "enum",  "error",  "struct",
+                        "union", "catch", "defer",  "try",        "pub",    "@import", "u8|",    "u16|",   "u32|", "u64|",  "u128|", "usize|", "i8|",
+                        "i16|",  "i32|",  "i64|",   "i128|",      "isize|", "bool|",   "void|",  "!void|", "f8|",  "f16|",  "f32|",  "f64|",   "f128|",
+                        "null|", "true|", "false|", "undefined|",
                     },
                     .flags = HIGHLIGHT_FLAGS{ .number = true, .string = true },
-                    // TODO! temp for testing multiline comments
+                    // NOTE! temp for testing multiline comments
                     .multiline_comment_start = "/*",
                     .multiline_comment_end = "*/",
                 };
@@ -889,7 +873,7 @@ fn ctrlKey(key: u8) u8 {
     return key & 0x1f;
 }
 
-// TODO! change this to return u8
+// TODO? change this to return u8
 fn editorReadKey() !u16 {
     var buffer: u8 = undefined;
 
@@ -959,4 +943,17 @@ fn isSeperator(char: u8) bool {
         }
         break :seperator false;
     };
+}
+
+fn renderCursorToRowCursor(row: std.ArrayList(u8), rx: usize) u16 {
+    var current_cursor: u16 = 0;
+
+    for (0..row.items.len) |cx| {
+        if (row.items[cx] == '\t') current_cursor += (TAB_STOP - 1) - (current_cursor % TAB_STOP);
+        current_cursor += 1;
+
+        if (current_cursor > rx) return @intCast(cx);
+    }
+
+    return current_cursor;
 }
