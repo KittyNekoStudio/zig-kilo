@@ -1,4 +1,3 @@
-// TODO! look into inline loops for string formating
 const std = @import("std");
 const posix = std.posix;
 const stdin = std.io.getStdIn();
@@ -9,7 +8,9 @@ pub fn main() !void {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    var editor = Editor.init(allocator);
+    var editor: Editor = undefined;
+    try editor.init(allocator);
+
     defer editor.filename.deinit();
 
     try editor.setStatusMessage("HELP: Ctrl-s = save | Ctrl-Q = quit | Ctrl-F = search", .{});
@@ -26,7 +27,6 @@ pub fn main() !void {
         try editor.refreshScreen();
     }
 
-    // TODO! handle the other errors or refactor disableRawMode to not return an err so I can defer it
     try stdout.writer().writeAll("\x1b[2J");
     try stdout.writer().writeAll("\x1b[H");
     for (editor.rows.items) |*row| row.deinit();
@@ -42,6 +42,7 @@ const HIGHLIGHT_FLAGS = packed struct {
     number: bool = false,
     string: bool = false,
 };
+
 const ZIG_FILE_EXTENSIONS = [_][]const u8{"zig"};
 
 const Key = enum(u16) {
@@ -234,7 +235,6 @@ const Row = struct {
                     const is_keyword2 = keyword[keyword_len - 1] == '|';
                     if (is_keyword2) keyword_len -= 1;
 
-                    // TODO! there is something wrong with the sperator before the keyword
                     if (i + keyword_len < self.render.items.len and std.mem.eql(u8, self.render.items[i .. i + keyword_len], keyword[0..keyword_len]) and isSeperator(self.render.items[i + keyword_len])) {
                         @memset(self.highlight.items[i .. i + keyword_len], if (is_keyword2) Highlight.KEYWORD2 else Highlight.KEYWORD1);
                         i += keyword_len;
@@ -269,15 +269,14 @@ const Editor = struct {
     status_message_time: i64,
     rows: std.ArrayList(Row),
     dirty: usize,
-    // TODO! are there static variables in zig?
     quit_times: u8,
     row_off: u16,
     col_off: u16,
     allocator: std.mem.Allocator,
     syntax: ?Syntax,
 
-    pub fn init(allocator: std.mem.Allocator) Editor {
-        var editor = Editor{
+    pub fn init(self: *Editor, allocator: std.mem.Allocator) !void {
+        self.* = .{
             .origin_termios = null,
             .screen_rows = 0,
             .screen_cols = 0,
@@ -296,10 +295,14 @@ const Editor = struct {
             .syntax = null,
         };
 
-        // TODO! collaps this into Editor.init
-        _ = try editor.getWindowSize();
+        var win_size = std.posix.system.winsize{ .ws_col = 0, .ws_row = 0, .ws_xpixel = 0, .ws_ypixel = 0 };
 
-        return editor;
+        if (std.posix.system.ioctl(stdout.handle, posix.system.T.IOCGWINSZ, @intFromPtr(&win_size)) == -1 or win_size.ws_col == 0) {
+            return error.FailedPosixIoctlInInit;
+        } else {
+            self.*.screen_rows = win_size.ws_row - 2;
+            self.*.screen_cols = win_size.ws_col;
+        }
     }
 
     // Thank you https://codeberg.org/zenith-editor/zenith
@@ -867,10 +870,10 @@ const Editor = struct {
                     .filematch = &ZIG_FILE_EXTENSIONS,
                     .single_line_comment_start = "//",
                     .keywords = &.{
-                        "fn",    "if",     "else",  "break",  "while", "for",   "switch", "return", "var",  "const", "enum",   "error", "struct",
-                        "union", "catch",  "defer", "try",    "pub",   "u8|",   "u16|",   "u32|",   "u64|", "u128|", "usize|", "i8|",   "i16|",
-                        "i32|",  "i64|",   "i128|", "isize|", "bool|", "void|", "!void|", "f8|",    "f16|", "f32|",  "f64|",   "f128|", "null|",
-                        "true|", "false|",
+                        "fn",    "if",     "else",       "break",  "while", "for",   "switch", "return", "var",  "const", "enum",   "error", "struct",
+                        "union", "catch",  "defer",      "try",    "pub",   "u8|",   "u16|",   "u32|",   "u64|", "u128|", "usize|", "i8|",   "i16|",
+                        "i32|",  "i64|",   "i128|",      "isize|", "bool|", "void|", "!void|", "f8|",    "f16|", "f32|",  "f64|",   "f128|", "null|",
+                        "true|", "false|", "undefined|",
                     },
                     .flags = HIGHLIGHT_FLAGS{ .number = true, .string = true },
                     // TODO! temp for testing multiline comments
