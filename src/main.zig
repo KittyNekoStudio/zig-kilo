@@ -1,4 +1,3 @@
-// TODO! look into inline loops for string formating
 const std = @import("std");
 const posix = std.posix;
 const stdin = std.io.getStdIn();
@@ -9,7 +8,9 @@ pub fn main() !void {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    var editor = Editor.init(allocator);
+    var editor: Editor = undefined;
+    try editor.init(allocator);
+
     defer editor.filename.deinit();
 
     try editor.setStatusMessage("HELP: Ctrl-s = save | Ctrl-Q = quit | Ctrl-F = search", .{});
@@ -26,7 +27,6 @@ pub fn main() !void {
         try editor.refreshScreen();
     }
 
-    // TODO! handle the other errors or refactor disableRawMode to not return an err so I can defer it
     try stdout.writer().writeAll("\x1b[2J");
     try stdout.writer().writeAll("\x1b[H");
     for (editor.rows.items) |*row| row.deinit();
@@ -42,6 +42,7 @@ const HIGHLIGHT_FLAGS = packed struct {
     number: bool = false,
     string: bool = false,
 };
+
 const ZIG_FILE_EXTENSIONS = [_][]const u8{"zig"};
 
 const Key = enum(u16) {
@@ -234,7 +235,6 @@ const Row = struct {
                     const is_keyword2 = keyword[keyword_len - 1] == '|';
                     if (is_keyword2) keyword_len -= 1;
 
-                    // TODO! there is something wrong with the sperator before the keyword
                     if (i + keyword_len < self.render.items.len and std.mem.eql(u8, self.render.items[i .. i + keyword_len], keyword[0..keyword_len]) and isSeperator(self.render.items[i + keyword_len])) {
                         @memset(self.highlight.items[i .. i + keyword_len], if (is_keyword2) Highlight.KEYWORD2 else Highlight.KEYWORD1);
                         i += keyword_len;
@@ -269,15 +269,14 @@ const Editor = struct {
     status_message_time: i64,
     rows: std.ArrayList(Row),
     dirty: usize,
-    // TODO! are there static variables in zig?
     quit_times: u8,
     row_off: u16,
     col_off: u16,
     allocator: std.mem.Allocator,
     syntax: ?Syntax,
 
-    pub fn init(allocator: std.mem.Allocator) Editor {
-        var editor = Editor{
+    pub fn init(self: *Editor, allocator: std.mem.Allocator) !void {
+        self.* = .{
             .origin_termios = null,
             .screen_rows = 0,
             .screen_cols = 0,
@@ -296,10 +295,14 @@ const Editor = struct {
             .syntax = null,
         };
 
-        // TODO! collaps this into Editor.init
-        _ = try editor.getWindowSize();
+        var win_size = std.posix.system.winsize{ .ws_col = 0, .ws_row = 0, .ws_xpixel = 0, .ws_ypixel = 0 };
 
-        return editor;
+        if (std.posix.system.ioctl(stdout.handle, posix.system.T.IOCGWINSZ, @intFromPtr(&win_size)) == -1 or win_size.ws_col == 0) {
+            return error.FailedPosixIoctlInInit;
+        } else {
+            self.*.screen_rows = win_size.ws_row - 2;
+            self.*.screen_cols = win_size.ws_col;
+        }
     }
 
     // Thank you https://codeberg.org/zenith-editor/zenith
@@ -372,7 +375,6 @@ const Editor = struct {
         try self.drawStatusBar(writer);
         try self.drawMessageBar(writer);
 
-        // TODO! find a better way to format strings.
         const move_cursor = try std.fmt.allocPrint(self.allocator, "\x1b[{d};{d}H", .{ (self.cursor_y - self.row_off) + 1, (self.cursor_render_x - self.col_off) + 1 });
         defer self.allocator.free(move_cursor);
         try writer.writeAll(move_cursor);
@@ -383,7 +385,6 @@ const Editor = struct {
     }
 
     fn setStatusMessage(self: *Editor, comptime fmt: []const u8, args: anytype) !void {
-        // TODO! find a better way to clear buffer. Switch to ArrayList?
         @memset(&self.status_message, 0);
         _ = try std.fmt.bufPrint(&self.status_message, fmt, args);
         self.status_message_time = std.time.timestamp();
@@ -607,11 +608,10 @@ const Editor = struct {
         };
         defer file.close();
 
-        var buffer: [1000]u8 = undefined;
+        var buffer: [1 << 20]u8 = undefined;
 
         self.updateFileDescriptor();
 
-        // TODO! might be better to chanage to this `file.readToEndAlloc()`
         while (try file.reader().readUntilDelimiterOrEof(buffer[0..], '\n')) |line| {
             try self.insertRow(line, self.rows.items.len);
             // Overflows if file is to long and assigning dirty to zero is outside of loop
@@ -652,21 +652,6 @@ const Editor = struct {
         }
 
         return render_cursor;
-    }
-
-    // TODO! make this not a method
-    fn renderCursorToRowCursor(self: Editor, row: std.ArrayList(u8), rx: usize) u16 {
-        var current_cursor: u16 = 0;
-        _ = self;
-
-        for (0..row.items.len) |cx| {
-            if (row.items[cx] == '\t') current_cursor += (TAB_STOP - 1) - (current_cursor % TAB_STOP);
-            current_cursor += 1;
-
-            if (current_cursor > rx) return @intCast(cx);
-        }
-
-        return current_cursor;
     }
 
     fn insertChar(self: *Editor, char: u8) !void {
@@ -761,25 +746,27 @@ const Editor = struct {
 
             const c = try editorReadKey();
 
-            // Catches when no input is recived, otherwise cursor goes to top of file
-            if (c == 0) continue;
-
-            // TODO! switch on c instead of else if chain
-            if (c == @intFromEnum(Key.DEL_KEY) or c == ctrlKey('h') or c == @intFromEnum(Key.BACKSPACE)) {
-                if (buffer.items.len != 0) _ = buffer.pop();
-            } else if (c == '\x1b') {
-                try self.setStatusMessage("", .{});
-                if (callback) |callback_inside| try callback_inside(self, buffer.items, c);
-                buffer.deinit();
-                return null;
-            } else if (c == '\r') {
-                if (buffer.items.len != 0) {
+            switch (c) {
+                0 => continue,
+                @intFromEnum(Key.DEL_KEY), ctrlKey('h'), @intFromEnum(Key.BACKSPACE) => if (buffer.items.len != 0) {
+                    _ = buffer.pop();
+                },
+                '\x1b' => {
+                    try self.setStatusMessage("", .{});
+                    if (callback) |callback_inside| try callback_inside(self, buffer.items, c);
+                    buffer.deinit();
+                    return null;
+                },
+                '\r' => {
                     try self.setStatusMessage("", .{});
                     if (callback) |callback_inside| try callback_inside(self, buffer.items, c);
                     return buffer;
-                }
-            } else if (!std.ascii.isControl(@truncate(c)) and c < 128) {
-                try buffer.append(@intCast(c));
+                },
+                else => {
+                    if (!std.ascii.isControl(@truncate(c)) and c < 128) {
+                        try buffer.append(@intCast(c));
+                    }
+                },
             }
             if (callback) |callback_inside| try callback_inside(self, buffer.items, c);
         }
@@ -846,7 +833,7 @@ const Editor = struct {
             if (match != null) {
                 state.last_match = current;
                 self.cursor_y = @intCast(current);
-                self.cursor_row_x = self.renderCursorToRowCursor(row.row, match.?);
+                self.cursor_row_x = renderCursorToRowCursor(row.row, match.?);
                 self.row_off = @intCast(self.rows.items.len);
 
                 state.saved_hl_line = current;
@@ -867,13 +854,13 @@ const Editor = struct {
                     .filematch = &ZIG_FILE_EXTENSIONS,
                     .single_line_comment_start = "//",
                     .keywords = &.{
-                        "fn",    "if",     "else",  "break",  "while", "for",   "switch", "return", "var",  "const", "enum",   "error", "struct",
-                        "union", "catch",  "defer", "try",    "pub",   "u8|",   "u16|",   "u32|",   "u64|", "u128|", "usize|", "i8|",   "i16|",
-                        "i32|",  "i64|",   "i128|", "isize|", "bool|", "void|", "!void|", "f8|",    "f16|", "f32|",  "f64|",   "f128|", "null|",
-                        "true|", "false|",
+                        "fn",    "if",    "else",   "break",      "while",  "for",     "switch", "return", "var",  "const", "enum",  "error",  "struct",
+                        "union", "catch", "defer",  "try",        "pub",    "@import", "u8|",    "u16|",   "u32|", "u64|",  "u128|", "usize|", "i8|",
+                        "i16|",  "i32|",  "i64|",   "i128|",      "isize|", "bool|",   "void|",  "!void|", "f8|",  "f16|",  "f32|",  "f64|",   "f128|",
+                        "null|", "true|", "false|", "undefined|",
                     },
                     .flags = HIGHLIGHT_FLAGS{ .number = true, .string = true },
-                    // TODO! temp for testing multiline comments
+                    // NOTE! temp for testing multiline comments
                     .multiline_comment_start = "/*",
                     .multiline_comment_end = "*/",
                 };
@@ -886,7 +873,7 @@ fn ctrlKey(key: u8) u8 {
     return key & 0x1f;
 }
 
-// TODO! change this to return u8
+// TODO? change this to return u8
 fn editorReadKey() !u16 {
     var buffer: u8 = undefined;
 
@@ -956,4 +943,17 @@ fn isSeperator(char: u8) bool {
         }
         break :seperator false;
     };
+}
+
+fn renderCursorToRowCursor(row: std.ArrayList(u8), rx: usize) u16 {
+    var current_cursor: u16 = 0;
+
+    for (0..row.items.len) |cx| {
+        if (row.items[cx] == '\t') current_cursor += (TAB_STOP - 1) - (current_cursor % TAB_STOP);
+        current_cursor += 1;
+
+        if (current_cursor > rx) return @intCast(cx);
+    }
+
+    return current_cursor;
 }
